@@ -5,11 +5,18 @@ import pytest
 from src.core.tool_bridge import ToolBridge
 from src.core.agent_tools import create_registry, build_system_prompt, build_feedback
 
+# Core tools that must always be present. New tools may be added freely.
+EXPECTED_TOOLS = {
+    "read_file", "edit", "bash", "grep", "list_dir", "web_search",
+    "web_fetch", "write_file", "delete_file", "get_task_output", "kill_task",
+    "mcp_list", "mcp_tools_list", "mcp_call",
+}
+
 
 class TestToolRegistry:
     def test_create_registry(self, tmp_path):
         reg = create_registry(str(tmp_path))
-        assert len(reg) == 23
+        assert len(reg) >= len(EXPECTED_TOOLS)
         assert "read_file" in reg
         assert "edit" in reg
         assert "bash" in reg
@@ -28,7 +35,7 @@ class TestToolRegistry:
     def test_get_openai_functions(self, tmp_path):
         reg = create_registry(str(tmp_path))
         funcs = reg.get_openai_functions()
-        assert len(funcs) == 23
+        assert len(funcs) == len(reg)
         for f in funcs:
             assert f["type"] == "function"
             assert "name" in f["function"]
@@ -60,7 +67,7 @@ class TestToolBridge:
     def test_create_bridge(self, tmp_path):
         tb = ToolBridge(workspace=str(tmp_path))
         assert tb.get_system_prompt() is not None
-        assert len(tb.get_openai_tools()) == 23
+        assert len(tb.get_openai_tools()) == len(tb.registry)
 
     def test_execute_read_file(self, tmp_path):
         f = tmp_path / "data.txt"
@@ -73,15 +80,11 @@ class TestToolBridge:
 
     def test_execute_bash(self, tmp_path):
         tb = ToolBridge(workspace=str(tmp_path))
-        try:
-            results = list(tb.execute_tool("bash", {"command": "echo test_output", "description": "test"}))
-            non_partial = [r for r in results if "partial" not in r]
-            assert len(non_partial) == 1
-            assert non_partial[0]["success"] is True
-            assert "test_output" in non_partial[0]["stdout"]
-        except Exception:
-            # Skip this test if stdin redirection causes issues
-            pytest.skip("stdin redirection issue in pytest")
+        results = list(tb.execute_tool("bash", {"command": "echo test_output", "description": "test"}))
+        non_partial = [r for r in results if "partial" not in r]
+        assert len(non_partial) == 1
+        assert non_partial[0]["success"] is True
+        assert "test_output" in non_partial[0]["stdout"]
 
     def test_execute_unknown_tool(self, tmp_path):
         tb = ToolBridge(workspace=str(tmp_path))
@@ -117,13 +120,7 @@ class TestBuildFeedback:
 
     def test_bash_result(self, tmp_path):
         from src.core.tools.bash import run_bash, BashInput
-        # Note: This test may fail in pytest due to stdin redirection issues
-        # but works fine in normal execution
-        try:
-            result = run_bash(BashInput(command="echo ok"), str(tmp_path))
-            feedback = build_feedback("bash", result)
-            assert "bash" in feedback
-            assert "ok" in feedback
-        except Exception:
-            # Skip this test if stdin redirection causes issues
-            pytest.skip("stdin redirection issue in pytest")
+        result = run_bash(BashInput(command="echo ok"), str(tmp_path))
+        feedback = build_feedback("bash", result)
+        assert "bash" in feedback
+        assert "ok" in feedback

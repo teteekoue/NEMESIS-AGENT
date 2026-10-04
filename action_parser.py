@@ -44,6 +44,7 @@ class ActionParser:
         "glob",
         "git",
         "todo",
+        "memory",
         "apply_patch",
         "web_search",
         "web_fetch",
@@ -54,6 +55,7 @@ class ActionParser:
         "list_agents",
         "delegate_task",
         "check_reports",
+        "agent_status",
         # Legacy
         "write",
         "read",
@@ -84,11 +86,38 @@ class ActionParser:
         "web-search": "web_search",
         "web-fetch": "web_fetch",
         "delete-file": "delete_file",
+        # Legacy aliases actually registered under other names
+        "kill_process": "kill_task",
+        "kill-process": "kill_task",
+        "agent-status": "agent_status",
     }
 
     def __init__(self, extra_valid_tools: Optional[Set[str]] = None):
         if extra_valid_tools:
             self.VALID_TOOLS = self.VALID_TOOLS | set(extra_valid_tools)
+
+    @classmethod
+    def from_registry(cls, registry: Any) -> "ActionParser":
+        """Build a parser whose valid tools come from a live ToolRegistry.
+
+        This keeps the set of accepted tool names in sync with the handlers
+        actually registered, instead of a hand-maintained list that drifts.
+        """
+        tools: Set[str] = set()
+        try:
+            known = getattr(registry, "_tools", None)
+            if isinstance(known, dict):
+                tools.update(known.keys())
+            else:
+                for reg in getattr(registry, "list_tools", lambda: [])():
+                    name = getattr(reg, "name", None) or getattr(
+                        getattr(reg, "definition", None), "name", None
+                    )
+                    if name:
+                        tools.add(name)
+        except Exception:
+            pass
+        return cls(extra_valid_tools=tools)
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -619,9 +648,46 @@ class ActionParser:
         return s
 
     def _repair_comments(self, s: str) -> str:
-        s = re.sub(r"/\*.*?\*/", "", s, flags=re.S)
-        s = re.sub(r"//[^\n]*", "", s)
-        return s
+        """Strip // and /* */ comments without touching string contents.
+
+        The previous regex-based implementation removed ``//`` sequences inside
+        JSON strings, corrupting values such as URLs (``http://...``).
+        """
+        result: List[str] = []
+        i = 0
+        in_string = False
+        escape = False
+        n = len(s)
+        while i < n:
+            ch = s[i]
+            if in_string:
+                result.append(ch)
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                i += 1
+                continue
+            if ch == '"':
+                in_string = True
+                result.append(ch)
+                i += 1
+                continue
+            if ch == "/" and i + 1 < n and s[i + 1] == "/":
+                while i < n and s[i] != "\n":
+                    i += 1
+                continue
+            if ch == "/" and i + 1 < n and s[i + 1] == "*":
+                i += 2
+                while i + 1 < n and not (s[i] == "*" and s[i + 1] == "/"):
+                    i += 1
+                i += 2
+                continue
+            result.append(ch)
+            i += 1
+        return "".join(result)
 
     def _repair_unquoted_keys(self, s: str) -> str:
         return re.sub(
@@ -631,18 +697,67 @@ class ActionParser:
         )
 
     def _repair_single_quotes(self, s: str) -> str:
-        """Convert single-quoted strings that look like JSON delimiters."""
-        # Only touch delimiters, not apostrophes inside already-double-quoted text.
-        # Heuristic: 'key':  and  : 'value'  patterns.
-        s = re.sub(r"'\s*:", '":', s)
-        s = re.sub(r":\s*'", ': "', s)
-        s = re.sub(r"'\s*,", '",', s)
-        s = re.sub(r",\s*'", ', "', s)
-        s = re.sub(r"\{\s*'", '{"', s)
-        s = re.sub(r"'\s*\}", '"}', s)
-        s = re.sub(r"\[\s*'", '["', s)
-        s = re.sub(r"'\s*\]", '"]', s)
-        return s
+        """Convert single-quoted strings to JSON double-quoted strings.
+
+        String-aware: content inside an already double-quoted value is never
+        touched (the old regex approach corrupted Python/JS code such as
+        ``f('a', 'b')`` by rewriting commas and quotes globally).
+        """
+        result: List[str] = []
+        i = 0
+        n = len(s)
+        in_double = False
+        escape = False
+        while i < n:
+            ch = s[i]
+            if in_double:
+                result.append(ch)
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_double = False
+                i += 1
+                continue
+            if ch == '"':
+                in_double = True
+                result.append(ch)
+                i += 1
+                continue
+            if ch == "'":
+                i += 1
+                out: List[str] = []
+                while i < n:
+                    c = s[i]
+                    if c == "\\" and i + 1 < n:
+                        nxt = s[i + 1]
+                        if nxt == "'":
+                            out.append("'")
+                        else:
+                            out.append(c)
+                            out.append(nxt)
+                        i += 2
+                        continue
+                    if c == "'":
+                        i += 1
+                        break
+                    if c == '"':
+                        out.append('\\"')
+                    elif c == "\n":
+                        out.append("\\n")
+                    elif c == "\r":
+                        out.append("\\r")
+                    elif c == "\t":
+                        out.append("\\t")
+                    else:
+                        out.append(c)
+                    i += 1
+                result.append('"' + "".join(out) + '"')
+                continue
+            result.append(ch)
+            i += 1
+        return "".join(result)
 
     def _repair_control_chars(self, s: str) -> str:
         """Remove or escape other control characters that break json.loads."""

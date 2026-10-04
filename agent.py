@@ -53,7 +53,11 @@ class NemesisApp:
         self._prompt_sent = False
         self._send_system_prompt = False
         # Système d'autorisation pour les outils
-        self._authorized_tools = set()  # Outils autorisés pour cette session (mode 'a')
+        # Les outils à haut risque sont autorisés par signature exacte (outil +
+        # paramètres) pour éviter qu'un "a" sur une commande bénigne autorise
+        # ensuite toute commande du même type (ex: rm -rf).
+        self._authorized_tools = set()  # Outils non destructifs autorisés (mode 'a')
+        self._authorized_signatures = set()  # Signatures d'appels à haut risque
         self._last_auth_choice = None  # Dernier choix d'autorisation
         # Stockage des sorties de commandes pour affichage différé
         self._hidden_outputs = {}  # Dict: {output_id: {"command": str, "output": str, "success": bool}}
@@ -115,19 +119,19 @@ class NemesisApp:
 
     def _save_config(self):
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        # Never persist MCP server blocks inside main config
-        clean = {
-            k: v
-            for k, v in (self.config or {}).items()
-            if k in ("provider", "bridge", "security", "nemapi_v3", "nemapi")
-            or (isinstance(v, dict) and "type" in (self.config.get("provider") or {}) and k == "provider")
-        }
-        # Keep full config but strip known MCP-only keys that may have been merged historically
+        # Keep the full config, but strip any MCP-server-shaped block that may
+        # have been merged historically. Detection is structural (a command key
+        # and no provider "type"), not a hard-coded list of server names.
         to_save = dict(self.config or {})
-        for mcp_key in list(to_save.keys()):
-            if mcp_key in ("calculator", "github") and isinstance(to_save.get(mcp_key), dict):
-                if "command" in to_save[mcp_key] and "type" not in to_save[mcp_key]:
-                    to_save.pop(mcp_key, None)
+        for key in list(to_save.keys()):
+            entry = to_save.get(key)
+            if (
+                isinstance(entry, dict)
+                and "command" in entry
+                and "type" not in entry
+                and key not in ("provider",)
+            ):
+                to_save.pop(key, None)
         with open(self.config_path, "w", encoding="utf-8") as f:
             yaml.dump(to_save, f, default_flow_style=False, allow_unicode=True)
 
@@ -211,24 +215,43 @@ class NemesisApp:
         """
         return self.parser.parse(resp)
 
+    @staticmethod
+    def _auth_signature(tool_name: str, action_content: Dict) -> str:
+        import hashlib
+        import json as _json
+        try:
+            blob = _json.dumps(action_content, sort_keys=True, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            blob = repr(action_content)
+        digest = hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
+        return f"{tool_name}:{digest}"
+
     def _ask_for_authorization(self, tool_name: str, action_content: Dict, risk: str = "medium") -> bool:
         """Ask the user to authorize a tool call. Returns True if allowed."""
         if risk == "read":
             return True
+        params = action_content if isinstance(action_content, dict) else {"value": action_content}
+        signature = self._auth_signature(tool_name, params)
         if tool_name in self._authorized_tools:
             return True
+        if signature in self._authorized_signatures:
+            return True
 
-        params = action_content if isinstance(action_content, dict) else {"value": action_content}
         self.console.print()
         if hasattr(self.composer, "display_auth"):
             self.composer.display_auth(tool_name, params)
         else:
             self.console.print(f"[yellow]Authorize tool:[/yellow] {tool_name}")
+        self.console.print(f"[dim]  risque: {risk}[/dim]")
 
         while True:
             try:
                 choice = self.composer.prompt_input(title=self.composer.AUTH_TITLE if hasattr(self.composer, "AUTH_TITLE") else "authorization [y/n/a]")
                 if self._consume_input_interrupt():
+                    return False
+                if choice is None:
+                    # EOF / cancelled prompt: deny instead of looping forever.
+                    self.console.print("[yellow]  authorization cancelled[/yellow]")
                     return False
                 if choice:
                     choice = choice.strip().lower()
@@ -239,14 +262,43 @@ class NemesisApp:
                         self._last_auth_choice = "n"
                         return False
                     if choice in ("a", "always"):
-                        self._authorized_tools.add(tool_name)
+                        if risk == "high":
+                            # High-risk calls are approved by exact signature only.
+                            self._authorized_signatures.add(signature)
+                            self.console.print("[green]  this exact high-risk call authorized for this session[/green]")
+                        else:
+                            self._authorized_tools.add(tool_name)
+                            self.console.print(f"[green]  '{tool_name}' authorized for this session[/green]")
                         self._last_auth_choice = "a"
-                        self.console.print(f"[green]  '{tool_name}' authorized for this session[/green]")
                         return True
                 self.console.print("[dim]  reply y, n, or a[/dim]")
             except (EOFError, KeyboardInterrupt):
                 self.console.print("[yellow]  cancelled[/yellow]")
                 return False
+
+    def _authorize_subagent_tool(self, tool_name: str, params: Dict, risk: str) -> bool:
+        """Authorization callback used by A2A sub-agents running in background.
+
+        It reuses the same interactive prompt as the main loop, so a delegated
+        task cannot run destructive tools without explicit user approval.
+        """
+        return self._ask_for_authorization(tool_name, params, risk)
+
+    def _execute_single_tool(self, action: Dict) -> Dict:
+        """Run one read-only tool and return the final result dict.
+
+        Read-only tools have no interactive input or interruption handling, so
+        they can safely run in a worker thread for parallel batches.
+        """
+        act_type = action['type']
+        act_content = action.get('content', {}) or {}
+        final_res: Dict[str, Any] = {}
+        for update in self.executor.execute_tool(act_type, act_content):
+            if "success" in update or (act_type != "bash" and update):
+                final_res = update
+            if act_type != "bash" and final_res:
+                break
+        return final_res
 
     def _format_feedback(self, action: Dict, res: Dict) -> str:
         output = res.get('stdout', res.get('content', ''))
@@ -323,6 +375,8 @@ class NemesisApp:
         max_tool_iterations = 50
         last_tool_name = None
         last_response_hash = None
+        last_feedback_signature = None
+        consecutive_failures = 0
         start_time = time.time()
 
         while iteration < max_tool_iterations:
@@ -376,9 +430,13 @@ class NemesisApp:
             if self.debug:
                 self.console.print(f"[debug]Reponse recue ({len(raw_response)} chars), action={parsed['action'] is not None}[/debug]")
 
-            # --- Duplicate response detection ---
-            response_hash = hash(raw_response.strip())
+            # --- Duplicate response detection (stable hash) ---
+            import hashlib
+            response_hash = hashlib.sha256(raw_response.strip().encode("utf-8", "replace")).hexdigest()
             if response_hash == last_response_hash and iteration > 1:
+                self.console.print(
+                    "[yellow]Réponse identique détectée : la boucle est interrompue pour éviter une répétition.[/yellow]"
+                )
                 if parsed['text'] and not parsed['text'].startswith("FEEDBACK:"):
                     self.composer.display_ai_message(parsed['text'])
                 break
@@ -394,7 +452,43 @@ class NemesisApp:
             if not actions:
                 break
             batch_feedback = []
-            for action in actions:
+
+            # --- Parallelize independent read-only calls in the same turn ---
+            def _is_read_only(a):
+                return self.executor.risk_for(a['type'], a.get('content', {})) == "read" if hasattr(self.executor, "risk_for") else False
+
+            read_only_calls = [a for a in actions if _is_read_only(a)]
+            other_calls = [a for a in actions if not _is_read_only(a)]
+
+            if len(read_only_calls) > 1:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                results_by_idx = {}
+                with ThreadPoolExecutor(max_workers=min(4, len(read_only_calls))) as pool:
+                    future_to_idx = {}
+                    for idx, action in enumerate(read_only_calls):
+                        self.composer.display_tool_start(action['type'], action.get('content', {}) or {})
+                        fut = pool.submit(self._execute_single_tool, action)
+                        future_to_idx[fut] = idx
+                    for fut in as_completed(future_to_idx):
+                        idx = future_to_idx[fut]
+                        try:
+                            res = fut.result()
+                        except Exception as e:
+                            res = {"success": False, "stdout": f"Erreur: {e}"}
+                        results_by_idx[idx] = res
+                for idx, action in enumerate(read_only_calls):
+                    res = results_by_idx[idx]
+                    self.composer.display_tool_result(res, tool_name=action['type'])
+                    batch_feedback.append(self._format_feedback(action, res))
+                if len(other_calls) == 0:
+                    current_input = "FEEDBACK:\n" + "\n\n".join(batch_feedback)
+                    current_role = "tool_result"
+                    continue
+                actions_iter = other_calls
+            else:
+                actions_iter = actions
+
+            for action in actions_iter:
                 act_type = action['type']
                 act_content = action.get('content', {})
                 last_tool_name = act_type
@@ -460,7 +554,25 @@ class NemesisApp:
                         self.composer.display_todo(final_res["items"])
                 batch_feedback.append(self._format_feedback(action, final_res))
 
-            current_input = "FEEDBACK:\n" + "\n\n".join(batch_feedback)
+            if any(("[EXECUTION REFUSEE" in fb) or ("Succes: False" in fb) for fb in batch_feedback):
+                consecutive_failures += 1
+            else:
+                consecutive_failures = 0
+            if consecutive_failures >= 3:
+                self.console.print(
+                    "[error]3 échecs consécutifs d'outils : arrêt du cycle pour éviter une boucle improductive.[/error]"
+                )
+                break
+
+            feedback_input = "FEEDBACK:\n" + "\n\n".join(batch_feedback)
+            feedback_signature = hashlib.sha256(feedback_input.encode("utf-8", "replace")).hexdigest()
+            if feedback_signature == last_feedback_signature:
+                self.console.print(
+                    "[yellow]Aucun progrès détecté (même retour d'outil) : arrêt du cycle.[/yellow]"
+                )
+                break
+            last_feedback_signature = feedback_signature
+            current_input = feedback_input
             current_role = "tool_result"
             continue
 
@@ -488,13 +600,13 @@ class NemesisApp:
         self.executor = create_executor_from_config(self.config, bridge=self.client)
         # Synchroniser le parseur avec les outils de l'executeur
         if hasattr(self.executor, "registry") and self.executor.registry:
-            extra_tools = set(self.executor.registry._tools.keys())
-            self.parser = ActionParser(extra_valid_tools=extra_tools)
+            self.parser = ActionParser.from_registry(self.executor.registry)
         
         # Passer l'exécuteur au scheduler A2A pour les subagents
         from src.core.agent_manager import get_scheduler
         scheduler = get_scheduler()
         scheduler.set_executor(self.executor)
+        scheduler.set_auth_callback(self._authorize_subagent_tool)
         
         # Recharger les agents avec l'exécuteur maintenant disponible
         # Les agents chargés depuis agents.json avant que l'exécuteur ne soit créé n'avaient pas d'exécuteur

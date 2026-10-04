@@ -4,6 +4,8 @@ This allows a gradual migration: the agent loop can use the new tool system
 while the existing provider layer stays unchanged.
 """
 
+import os
+import re
 from typing import Dict, Any, Generator
 from pathlib import Path
 from src.core.agent_tools import create_registry, build_system_prompt, build_feedback
@@ -33,18 +35,44 @@ class ToolBridge:
                 return "high"
         return risk
 
+    _PATH_KEYS = ("path", "paths", "file_path", "file", "filename", "target_file", "workdir", "cwd")
+
+    def _is_within_workspace(self, raw: Any) -> bool:
+        """Return True if raw resolves inside the workspace (symlinks followed)."""
+        candidate = Path(str(raw)).expanduser()
+        resolved = (candidate if candidate.is_absolute() else self.workspace_root / candidate).resolve()
+        return resolved == self.workspace_root or self.workspace_root in resolved.parents
+
+    def _check_patch_paths(self, patch: str) -> str | None:
+        """Reject patches touching files outside the workspace.
+
+        A patch is executed by the `patch` binary with cwd set to the workspace,
+        so a `+++ ../outside` or an absolute path would escape containment.
+        """
+        for match in re.finditer(r"^(?:\+\+\+|---)\s+([^\t\n]+)", patch, re.M):
+            target = match.group(1).strip()
+            if target in ("/dev/null", "/dev/stdin"):
+                continue
+            # Strip the b/ or a/ prefix that `patch -p1` removes.
+            cleaned = re.sub(r"^[ab]/", "", target)
+            if not self._is_within_workspace(cleaned):
+                return f"Patch targets a path outside workspace: {target}"
+        return None
+
     def _check_paths(self, tool_name: str, parameters: Dict[str, Any]) -> str | None:
-        path_keys = ("path", "file_path", "target_file", "filename", "workdir")
-        for key in path_keys:
+        for key in self._PATH_KEYS:
             value = parameters.get(key)
-            if not value:
+            if value is None or value == "":
                 continue
             values = value if isinstance(value, list) else [value]
             for raw in values:
-                candidate = Path(str(raw)).expanduser()
-                resolved = (candidate if candidate.is_absolute() else self.workspace_root / candidate).resolve()
-                if resolved != self.workspace_root and self.workspace_root not in resolved.parents:
+                if raw is None or raw == "":
+                    continue
+                if not self._is_within_workspace(raw):
                     return f"Path outside workspace is not allowed: {raw}"
+        # apply_patch carries its targets inside the diff body, not in a path key.
+        if tool_name == "apply_patch":
+            return self._check_patch_paths(str(parameters.get("patch", "")))
         return None
 
     def _check_read_before_write(self, tool_name: str, parameters: Dict[str, Any]) -> str | None:
@@ -257,7 +285,7 @@ class ToolBridge:
     def get_system_prompt(self) -> str:
         # The live registry is the single source of truth for capabilities.
         # A static prompt can drift from the installed handlers and schemas.
-        return build_system_prompt(self.registry)
+        return build_system_prompt(self.registry, str(self.workspace_root))
 
     def get_openai_tools(self) -> list:
         return self.registry.get_openai_functions()

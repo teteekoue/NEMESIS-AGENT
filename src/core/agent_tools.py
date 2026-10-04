@@ -19,6 +19,7 @@ from .tools.web_fetch import web_fetch, DESCRIPTION_FULL as WEB_FETCH_DESC
 from .tools.glob_files import glob_files, DESCRIPTION_FULL as GLOB_DESC
 from .tools.git_info import git_info, DESCRIPTION_FULL as GIT_DESC
 from .tools.todo import todo, DESCRIPTION_FULL as TODO_DESC
+from .tools.memory import memory, DESCRIPTION_FULL as MEMORY_DESC
 from .tools.apply_patch import apply_patch, DESCRIPTION_FULL as PATCH_DESC
 
 
@@ -138,6 +139,11 @@ def create_registry(workspace_dir: str) -> ToolRegistry:
                 },
             },
             "required": ["content"],
+            "anyOf": [
+                {"required": ["file_path"]},
+                {"required": ["path"]},
+                {"required": ["filename"]},
+            ],
         },
     )
 
@@ -354,15 +360,53 @@ def create_registry(workspace_dir: str) -> ToolRegistry:
         params_schema={
             "type": "object",
             "properties": {
-                "action": {"type": "string", "description": "list | add | update | clear"},
+                "action": {"type": "string", "description": "list | add | set | update | clear"},
                 "content": {"type": "string", "description": "Todo text (for add/update)"},
-                "items": {"type": "array", "items": {"type": "string"}, "description": "Multiple todos to add"},
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "content": {"type": "string"},
+                                    "status": {"type": "string"},
+                                },
+                            },
+                        ]
+                    },
+                    "description": "Items for add/set (strings or {content,status})",
+                },
                 "id": {"type": "string", "description": "Todo id (for update)"},
                 "status": {"type": "string", "description": "pending | in_progress | completed | cancelled"},
                 "force": {"type": "boolean", "description": "For clear: remove all items"},
             },
             "required": ["action"],
         },
+    )
+
+    registry.register(
+        name="memory",
+        kind=ToolKind.MEMORY_GET,
+        handler=lambda action="list", content=None, query=None, key=None, tags=None, id=None, limit=20: memory(
+            action, _ws, content=content, query=query, key=key, tags=tags, id=id, limit=limit
+        ),
+        description=MEMORY_DESC,
+        params_schema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "set | get | search | list | delete | clear"},
+                "content": {"type": "string", "description": "Memory text (for set)"},
+                "query": {"type": "string", "description": "Keywords (for search)"},
+                "key": {"type": "string", "description": "Stable key for upsert/get"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags"},
+                "id": {"type": "string", "description": "Memory id (for get/delete)"},
+                "limit": {"type": "integer", "description": "Max results (default 20)"},
+            },
+            "required": ["action"],
+        },
+        risk="medium",
     )
 
     registry.register(
@@ -543,11 +587,29 @@ def create_registry(workspace_dir: str) -> ToolRegistry:
         params_schema={"type": "object", "properties": {}},
     )
 
+    registry.register(
+        name="skill",
+        kind=ToolKind.READ,
+        handler=lambda name=None, skill=None: _use_skill(name or skill),
+        description=(
+            "Load the full SKILL.md instructions for one installed skill by name. "
+            "Use this after seeing a skill in 'Available skills' when it matches the task."
+        ),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Installed skill name"},
+            },
+            "required": ["name"],
+        },
+        param_names={"name": "name", "skill": "name"},
+    )
+
 
     return registry.finalize()
 
 
-def build_system_prompt(registry: ToolRegistry) -> str:
+def build_system_prompt(registry: ToolRegistry, workspace_dir: Optional[str] = None) -> str:
     renderer = registry.get_renderer()
     prompt = renderer.render(SYSTEM_PROMPT_TEMPLATE)
 
@@ -567,6 +629,39 @@ def build_system_prompt(registry: ToolRegistry) -> str:
 
     tool_count = len(tools_lines)
     prompt += f"\n\n## Available Tools ({tool_count} total)\n\n" + "\n".join(tools_lines)
+
+    # Surface the most recent durable memories so the agent starts each session
+    # with relevant project knowledge already in context.
+    if workspace_dir:
+        try:
+            from .tools.memory import _load  # type: ignore
+            items = _load(workspace_dir)[-10:]
+            if items:
+                lines = ["\n\n## Known project memory\n"]
+                for it in items:
+                    lines.append(f"- {it.get('content')}")
+                prompt += "\n".join(lines)
+        except Exception:
+            pass
+
+    # Progressive-disclosure skill index: names + descriptions only. The agent
+    # reads the full SKILL.md via read_file when a skill is relevant.
+    try:
+        from .skills_manager import SkillManager
+        try:
+            from .paths import tools_library_path
+            installed = SkillManager(str(tools_library_path())).list_installed()
+        except Exception:
+            installed = SkillManager().list_installed()
+        if installed:
+            lines = ["\n\n## Available skills\n",
+                     "Read a skill's SKILL.md with read_file before applying it.\n"]
+            for s in installed:
+                desc = (s.get("description") or "").split("\n")[0][:160]
+                lines.append(f"- **{s.get('name')}**: {desc} (path: {s.get('path')})")
+            prompt += "\n".join(lines)
+    except Exception:
+        pass
 
     return prompt
 
@@ -650,7 +745,16 @@ def _write_file(file_path: str, content: str, workspace_dir: str) -> object:
         message: str
         error: Optional[str] = None
 
+    if not file_path or not str(file_path).strip():
+        return WriteResult(success=False, message="", error="file_path is required.")
     resolved = os.path.join(workspace_dir, file_path) if not os.path.isabs(file_path) else file_path
+    resolved = os.path.realpath(resolved)
+    try:
+        ws_root = os.path.realpath(workspace_dir)
+        if resolved != ws_root and os.path.commonpath([ws_root, resolved]) != ws_root:
+            return WriteResult(success=False, message="", error=f"Path outside workspace: {file_path}")
+    except ValueError:
+        return WriteResult(success=False, message="", error=f"Path outside workspace: {file_path}")
     try:
         os.makedirs(os.path.dirname(resolved) or ".", exist_ok=True)
     except OSError as e:
@@ -673,7 +777,16 @@ def _delete_file(target_file: str, workspace_dir: str) -> object:
         message: str
         error: Optional[str] = None
 
+    if not target_file or not str(target_file).strip():
+        return DeleteResult(success=False, message="", error="target_file is required.")
     resolved = os.path.join(workspace_dir, target_file) if not os.path.isabs(target_file) else target_file
+    resolved = os.path.realpath(resolved)
+    try:
+        ws_root = os.path.realpath(workspace_dir)
+        if resolved != ws_root and os.path.commonpath([ws_root, resolved]) != ws_root:
+            return DeleteResult(success=False, message="", error=f"Path outside workspace: {target_file}")
+    except ValueError:
+        return DeleteResult(success=False, message="", error=f"Path outside workspace: {target_file}")
     if not os.path.exists(resolved):
         return DeleteResult(success=False, message="", error=f"File not found: {target_file}")
 
@@ -719,13 +832,20 @@ def _make_web_fetch_input(url, format="markdown"):
     return WebFetchInput(url=url, format=format)
 
 
+_MCP_MANAGER_SINGLETON = None
+
+
 def _mcp_manager():
-    from .mcp_manager import MCPManager
-    try:
-        from .paths import mcp_config_path
-        return MCPManager(str(mcp_config_path()))
-    except Exception:
-        return MCPManager()
+    """Return a process-wide MCPManager so pooled MCP sessions persist."""
+    global _MCP_MANAGER_SINGLETON
+    if _MCP_MANAGER_SINGLETON is None:
+        from .mcp_manager import MCPManager
+        try:
+            from .paths import mcp_config_path
+            _MCP_MANAGER_SINGLETON = MCPManager(str(mcp_config_path()))
+        except Exception:
+            _MCP_MANAGER_SINGLETON = MCPManager()
+    return _MCP_MANAGER_SINGLETON
 
 
 def _mcp_list() -> dict:
@@ -763,9 +883,8 @@ def _mcp_tools_list(server: str) -> dict:
     server = (server or "").strip()
     if not server:
         return {"success": False, "stdout": "Parameter 'server' is required."}
-    client = None
     try:
-        client = _mcp_manager().get_client(server)
+        client = _mcp_manager().get_pooled_client(server)
     except Exception as e:
         return {"success": False, "stdout": f"Impossible de demarrer le serveur MCP '{server}': {e}"}
     if not client:
@@ -794,12 +913,6 @@ def _mcp_tools_list(server: str) -> dict:
         return {"success": False, "stdout": f"Serveur MCP '{server}' injoignable (timeout). {e}"}
     except Exception as e:
         return {"success": False, "stdout": f"Erreur liste outils MCP: {e}"}
-    finally:
-        if client is not None:
-            try:
-                client.close()
-            except Exception:
-                pass
 
 
 def _mcp_call(server: str, tool: str, arguments=None) -> dict:
@@ -810,9 +923,8 @@ def _mcp_call(server: str, tool: str, arguments=None) -> dict:
         return {"success": False, "stdout": "Parameter 'server' is required."}
     if not tool:
         return {"success": False, "stdout": "Parameter 'tool' is required."}
-    client = None
     try:
-        client = _mcp_manager().get_client(server)
+        client = _mcp_manager().get_pooled_client(server)
     except Exception as e:
         return {"success": False, "stdout": f"Impossible de demarrer le serveur MCP '{server}': {e}"}
     if not client:
@@ -852,12 +964,6 @@ def _mcp_call(server: str, tool: str, arguments=None) -> dict:
         return {"success": False, "stdout": f"Serveur MCP '{server}' injoignable (timeout). {e}"}
     except Exception as e:
         return {"success": False, "stdout": f"Erreur MCP: {e}"}
-    finally:
-        if client is not None:
-            try:
-                client.close()
-            except Exception:
-                pass
 
 
 def _list_agents() -> dict:
@@ -940,7 +1046,7 @@ def _delegate_task(agent: str = "", instruction: str = "", label: str = "") -> d
                 reports_hint = str(sched._reports_dir)
         except Exception:
             pass
-        report_file = f"{reports_hint.rstrip('/')}/{task_id}.md"
+        report_file = f"{reports_hint.rstrip('/')}/task_{task_id}.md"
         return {
             "success": True,
             "stdout": (
@@ -1101,3 +1207,23 @@ def _skills_list() -> dict:
         return {"success": True, "stdout": "\n".join(lines)}
     except Exception as e:
         return {"success": False, "stdout": f"skills_list error: {e}"}
+
+
+def _use_skill(name: str) -> dict:
+    try:
+        from src.core.skills_manager import SkillManager
+        try:
+            from src.core.paths import tools_library_path
+            mgr = SkillManager(str(tools_library_path()))
+        except Exception:
+            mgr = SkillManager()
+        if not name or not str(name).strip():
+            return {"success": False, "stdout": "skill: 'name' is required. Use skills_list to see what's installed."}
+        meta = mgr.get_skill(str(name).strip())
+        if not meta:
+            return {"success": False, "stdout": f"Skill '{name}' introuvable. Voir skills_list."}
+        body = meta.get("content") or ""
+        header = f"[SKILL] {meta.get('name', name)} v{meta.get('version', '?')}\n{meta.get('description', '')}".strip() + "\n\n"
+        return {"success": True, "stdout": header + (body[:8000] or "(pas de SKILL.md)")}
+    except Exception as e:
+        return {"success": False, "stdout": f"skill error: {e}"}

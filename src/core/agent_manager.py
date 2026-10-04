@@ -164,8 +164,20 @@ class A2AAgentClient:
         self._tools_cache = None
         self._max_iterations = 50
         self._interrupted = False
+        # When True, the A2A client must not execute tools (no interactive
+        # authorization channel available). Read-only tools remain allowed.
+        self._tools_blocked = False
+        self._auth_callback = None
 
         self._init_client()
+
+    def set_auth_callback(self, callback: Any) -> None:
+        """Attach an interactive authorization callback (tool, params, risk) -> bool.
+
+        When no callback is attached, the sub-agent runs in read-only mode so it
+        cannot take destructive actions without explicit human approval.
+        """
+        self._auth_callback = callback
 
     def _init_client(self) -> None:
         """Init HTTP client for NemAPI v3 or OpenAI-compatible APIs (Groq, ...)."""
@@ -217,6 +229,7 @@ class A2AAgentClient:
     def set_executor(self, executor: Any) -> None:
         """Définit l'exécuteur d'outils pour le subagent."""
         self._executor = executor
+        self._parser_cache = None
         # Do NOT auto-enable native OpenAI tool_calls for A2A sub-agents.
         # Many providers/models (Groq free-tier, Ollama, etc.) reject tools= payload.
         # A2A relies on text JSON tool calls which work universally.
@@ -235,6 +248,27 @@ class A2AAgentClient:
         """
         if not self._executor:
             return {"success": False, "stdout": f"No executor available for tool {tool_name}"}
+
+        # Enforce authorization for sub-agents. Sub-agents have no interactive
+        # prompt of their own: without a callback they are restricted to
+        # read-only tools, and excluded meta-tools are always refused.
+        if tool_name in _TEAMMATE_EXCLUDED_TOOLS and tool_name not in ("skills_list",):
+            return {"success": False, "stdout": f"Tool '{tool_name}' is not available to sub-agents"}
+        risk = self._executor.risk_for(tool_name, params) if hasattr(self._executor, "risk_for") else "medium"
+        if risk != "read":
+            if self._auth_callback is None:
+                return {
+                    "success": False,
+                    "stdout": (
+                        f"Tool '{tool_name}' requires authorization; no approval channel "
+                        "is available to this sub-agent (read-only mode)."
+                    ),
+                }
+            try:
+                if not self._auth_callback(tool_name, params, risk):
+                    return {"success": False, "stdout": f"[EXECUTION REFUSEE PAR L'UTILISATEUR] {tool_name}"}
+            except Exception as e:
+                return {"success": False, "stdout": f"Authorization error for '{tool_name}': {e}"}
 
         try:
             gen_or_result = self._executor.execute_tool(tool_name, params)
@@ -349,7 +383,7 @@ class A2AAgentClient:
         # Prefer ActionParser when available (same as main agent)
         try:
             from action_parser import ActionParser
-            parser = ActionParser()
+            parser = self._get_parser()
             result = parser.parse(response_text)
             if result and isinstance(result, dict):
                 # Format 1: canonical {"tool":..., "parameters":...}
@@ -379,11 +413,23 @@ class A2AAgentClient:
                 return tool_name, params or {}
         return None, None
 
+    def _get_parser(self):
+        """Return an ActionParser whose valid tools match the executor registry."""
+        cached = getattr(self, "_parser_cache", None)
+        if cached is not None:
+            return cached
+        from action_parser import ActionParser
+        registry = getattr(self._executor, "registry", None) if self._executor else None
+        if registry is not None:
+            self._parser_cache = ActionParser.from_registry(registry)
+        else:
+            self._parser_cache = ActionParser()
+        return self._parser_cache
+
     def _detect_tool_calls(self, response_text: str):
         """Return all canonical tool calls in a model turn."""
         try:
-            from action_parser import ActionParser
-            parsed = ActionParser().parse(response_text)
+            parsed = self._get_parser().parse(response_text)
             actions = parsed.get("actions") or []
             return [
                 (item.get("type"), item.get("content") or {})
@@ -621,12 +667,29 @@ class A2AAgentClient:
         return self._execute_task_loop(manifest)
 
     def _execute_task_loop(self, manifest: TaskManifest) -> Optional[dict]:
-        """Boucle d'exécution de la tâche avec support des outils."""
+        """Boucle d'exécution de la tâche avec support des outils et timeout."""
         iteration = 0
         max_iterations = getattr(self, "_max_iterations", 12) or 12
+        # Honor the task's declared deadline instead of letting a stuck agent
+        # run forever. Falls back to 5 minutes when unset.
+        try:
+            deadline_s = int(getattr(manifest, "timeout_ms", 0) or 0) / 1000.0
+        except (TypeError, ValueError):
+            deadline_s = 0
+        if deadline_s <= 0:
+            deadline_s = 300.0
+        start_ts = time.time()
 
         while iteration < max_iterations and not self._interrupted:
             iteration += 1
+
+            if time.time() - start_ts > deadline_s:
+                self._status = "idle"
+                return {
+                    "status": "timeout",
+                    "task_id": manifest.task_id,
+                    "error": f"Task exceeded its deadline of {int(deadline_s)}s",
+                }
 
             if iteration == 1:
                 prompt = (
@@ -909,15 +972,23 @@ class A2ATaskScheduler:
         self.agents: Dict[str, A2AAgentClient] = {}
         self._lock = threading.Lock()
         self._executor = None
+        self._auth_callback = None
         # task_id -> runtime record (async jobs)
         self._jobs: Dict[str, Dict[str, Any]] = {}
         self._reports_dir: Optional[Path] = None
+
+    def set_auth_callback(self, callback: Any) -> None:
+        """Propagate an interactive authorization callback to all agents."""
+        self._auth_callback = callback
+        for agent in self.agents.values():
+            agent.set_auth_callback(callback)
 
     def set_executor(self, executor: Any) -> None:
         """Définit l'exécuteur partagé pour tous les agents."""
         self._executor = executor
         for agent in self.agents.values():
             agent.set_executor(executor)
+            agent.set_auth_callback(self._auth_callback)
         # Resolve reports directory under workspace
         try:
             root = getattr(executor, "workspace_root", None)
@@ -959,6 +1030,7 @@ class A2ATaskScheduler:
             self.agents[agent.name] = agent
             if self._executor:
                 agent.set_executor(self._executor)
+            agent.set_auth_callback(self._auth_callback)
 
     def remove_agent(self, name: str) -> None:
         with self._lock:

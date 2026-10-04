@@ -13,8 +13,12 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 from rich.markdown import Markdown
+try:
+    from src.ui.theme import NEMESIS_THEME
+except Exception:  # pragma: no cover
+    NEMESIS_THEME = None
 
-console = Console()
+console = Console(theme=NEMESIS_THEME) if NEMESIS_THEME else Console()
 
 
 def _make_skill_mgr() -> SkillManager:
@@ -48,20 +52,38 @@ PROVIDER_LABELS = {
 
 @registry.register("help", "Affiche la liste des commandes disponibles")
 def help_command(args=None):
-    if _active_app:
-        if args:
-            command = registry.get_command(str(args[0]).lower())
-            if command:
-                usage = command.usage or f"/{command.name}"
-                console.print(Panel(
-                    f"[bold cyan]{usage}[/bold cyan]\n\n{command.description}",
-                    title="Aide",
-                    border_style="bright_cyan",
-                ))
-                return
-            console.print(f"[error]Commande inconnue : /{args[0]}[/error]")
+    if not _active_app:
+        return  # nothing to introspect
+
+    if args:
+        command = registry.get_command(str(args[0]).lower())
+        if command:
+            usage = command.usage or f"/{command.name}"
+            console.print(Panel(
+                f"[bold cyan]{usage}[/bold cyan]\n\n{command.description}",
+                title="Aide",
+                border_style="bright_cyan",
+            ))
             return
-        _active_app._show_commands()
+        console.print(f"[error]Commande inconnue : /{args[0]}[/error]")
+        return
+
+    # Shared rendering: use the module console so web capture (which swaps
+    # `default_commands.console`) keeps working, with a graceful fallback.
+    renderer = getattr(_active_app, "_show_commands", None)
+    if callable(renderer):
+        try:
+            renderer()
+        except Exception:
+            pass
+
+    table = Table(title="Commandes disponibles", show_header=True, header_style="bold #89b4fa")
+    table.add_column("Commande", style="bold #fab387", no_wrap=True)
+    table.add_column("Usage", style="#a6adc8", no_wrap=True)
+    table.add_column("Description", style="#cdd6f4")
+    for cmd in sorted(registry.list_commands(), key=lambda c: c.name):
+        table.add_row(f"/{cmd.name}", cmd.usage or "—", cmd.description or "")
+    console.print(table)
 
 
 @registry.register("clear", "Efface l'ecran du terminal")
@@ -658,8 +680,58 @@ def nemesis_md_command(args=None):
     return "PROMPT_INTERNAL: Genere un fichier NEMESIS.md a la racine pour documenter ce projet (objectifs, structure, technologies, etat d'avancement). Utilise l'action 'write'."
 
 
-@registry.register("skills", "Gere les competences (skills) de l'agent")
+@registry.register("skills", "Gere les competences (skills) de l'agent", "/skills [list|show <nom>|install <url|dossier>|remove <nom>]")
 def skills_command(args=None):
+    args = list(args or [])
+
+    def _render_list():
+        installed = skill_mgr.list_installed()
+        if not installed:
+            console.print("[yellow]Aucun skill additionnel installe.[/yellow]")
+            return
+        table = Table(title=f"Skills installes ({len(installed)})", border_style="magenta")
+        table.add_column("Nom", style="bold magenta")
+        table.add_column("Version", style="dim")
+        table.add_column("Description", style="white")
+        for s in installed:
+            table.add_row(str(s.get("name", "?")), str(s.get("version", "?")), str(s.get("description", ""))[:80])
+        console.print(table)
+
+    # Non-interactive path used by the web UI.
+    if args:
+        sub = str(args[0]).lower()
+        if sub == "list":
+            _render_list(); return
+        if sub == "show" and len(args) > 1:
+            meta = skill_mgr.get_skill(args[1])
+            if not meta:
+                console.print(f"[error]Skill '{args[1]}' introuvable.[/error]"); return
+            console.print(f"[bold]{meta.get('name')}[/bold] v{meta.get('version')}")
+            console.print(meta.get("description", ""))
+            content = meta.get("content")
+            if content:
+                console.print("\n[dim]--- SKILL.md ---[/dim]\n" + content[:4000])
+            else:
+                console.print("[yellow]Pas de SKILL.md[/yellow]")
+            return
+        if sub == "install" and len(args) > 1:
+            target = args[1]
+            source = Path(target).expanduser()
+            if source.exists() and source.is_dir():
+                ok, msg = skill_mgr.install_from_local(str(source))
+            elif target.startswith(("http://", "https://")) or target.endswith((".git", ".zip")):
+                ok, msg = skill_mgr.install_from_url(target)
+            else:
+                console.print("[error]Chemin ou URL invalide pour /skills install.[/error]"); return
+            console.print(f"[success]{msg}[/success]" if ok else f"[error]{msg}[/error]")
+            return
+        if sub == "remove" and len(args) > 1:
+            ok, msg = skill_mgr.uninstall(args[1])
+            console.print(f"[success]{msg}[/success]" if ok else f"[error]{msg}[/error]")
+            return
+        console.print("[error]Usage: /skills list | show <nom> | install <url|dossier> | remove <nom>[/error]")
+        return
+
     while True:
         installed = skill_mgr.list_installed()
         console.print("\n[bold magenta]Gestion des Skills (Claude-Compatible)[/bold magenta]")
@@ -726,10 +798,49 @@ def skills_command(args=None):
 # NOUVELLES COMMANDES : config, models, history
 # =====================================================================
 
-@registry.register("config", "Configure l'URL et le port du serveur NEMAPI", "/config")
+@registry.register("config", "Configure l'URL et le port du serveur NEMAPI", "/config [url] [port] [modele]")
 def config_command(args=None):
     if not _active_app:
         console.print("[error]Application non initialisee.[/error]")
+        return
+
+    args = list(args or [])
+    # Non-interactive path (web UI / scripting): pass url, port and optionally the model.
+    if args and str(args[0]).lower() in ("--set", "-s"):
+        args = args[1:]
+    if args:
+        from src.core.paths import DEFAULT_WORKSPACE
+        current_cfg = _active_app.config
+        new_config = {"security": {"workspace": current_cfg.get("security", {}).get("workspace", str(DEFAULT_WORKSPACE))}}
+        raw_url = str(args[0]).strip()
+        port_str = str(args[1]).strip() if len(args) > 1 else ""
+        model = str(args[2]).strip() if len(args) > 2 else current_cfg.get("provider", {}).get("model", "")
+        if "://" in raw_url:
+            from urllib.parse import urlparse
+            parsed = urlparse(raw_url)
+            host = parsed.hostname or ""
+            if not port_str and parsed.port:
+                port_str = str(parsed.port)
+        else:
+            host = raw_url.rstrip("/")
+        if not host:
+            console.print("[error]URL NEMAPI invalide.[/error]")
+            return
+        try:
+            port = int(port_str) if port_str else _active_app.config.get("nemapi", {}).get("port", 8090)
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except ValueError:
+            console.print("[error]Port invalide (1-65535).[/error]")
+            return
+        new_config["provider"] = {"type": "nemapi", "model": model}
+        new_config["nemapi"] = {"host": host, "port": port}
+        console.print(f"[system]Configuration NemApi : {host}:{port} · modele='{model}'[/system]")
+        success, msg = _active_app.reconfigure_provider(new_config)
+        if success:
+            console.print(f"[success]Provider configure : {msg}[/success]")
+        else:
+            console.print(f"[error]Echec: {msg}[/error]")
         return
 
     console.print("\n[bold magenta]Configuration du serveur NEMAPI[/bold magenta]\n")
@@ -862,7 +973,7 @@ def config_command(args=None):
         console.print(f"[error]Echec: {msg}[/error]")
 
 
-@registry.register("models", "Liste les modeles NEMAPI et permet d'en selectionner un", "/models")
+@registry.register("models", "Liste les modeles NEMAPI et permet d'en selectionner un", "/models [filtre] | /model <id>")
 @registry.register("model", "Alias de /models")
 def models_command(args=None):
     if not _active_app or not _active_app.client:
@@ -870,6 +981,23 @@ def models_command(args=None):
         return
 
     provider_type = _active_app.config.get("provider", {}).get("type", "bridge")
+    args = list(args or [])
+
+    # Non-interactive path (web UI): `/models` lists, `/models <id>` selects.
+    if args and str(args[0]).lower() not in ("--list", "-l"):
+        selected = str(args[0]).strip()
+        try:
+            available = {m["id"] for m in (_active_app.client.list_models() or []) if isinstance(m, dict) and m.get("id")}
+        except Exception:
+            available = set()
+        if available and selected not in available:
+            console.print(f"[yellow]Modele '{selected}' absent de la liste serveur ; application quand meme.[/yellow]")
+        _active_app.config.setdefault("provider", {})["model"] = selected
+        _active_app._save_config()
+        _active_app.client.model = selected
+        console.print(f"[success]Modele change : {selected}[/success]")
+        console.print("[yellow]Note: la conversation actuelle est conservee.[/yellow]")
+        return
 
     console.print(f"\n[system]Recuperation des modeles depuis {PROVIDER_LABELS.get(provider_type, provider_type)}...[/system]")
     try:

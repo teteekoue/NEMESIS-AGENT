@@ -6,6 +6,7 @@ import signal
 import uuid
 import re
 import threading
+import queue
 import sys
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Generator
@@ -79,6 +80,20 @@ def _is_noop_command(command: str) -> bool:
     return not t or t == "true" or t == ":"
 
 
+def _safe_stdin():
+    """Return a usable stdin for the child, or DEVNULL when unavailable.
+
+    Captured/pseudo stdin (pytest, notebooks, pipes) has no valid fileno and
+    would make Popen raise "redirected stdin is pseudofile, has no fileno()".
+    """
+    try:
+        fd = sys.stdin.fileno()
+        os.fstat(fd)
+        return sys.stdin
+    except Exception:
+        return subprocess.DEVNULL
+
+
 def _is_bare_echo(command: str) -> bool:
     t = command.strip()
     if not t.startswith("echo"):
@@ -134,7 +149,7 @@ def _run_foreground(cmd: str, workdir: str, timeout_ms: int) -> BashOutput:
             actual_cmd,
             shell=True,
             cwd=workdir,
-            stdin=sys.stdin,
+            stdin=_safe_stdin(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             preexec_fn=os.setsid if os.name != "nt" else None,
@@ -203,7 +218,7 @@ def _run_background(cmd: str, workdir: str, description: str) -> BashOutput:
             actual_cmd,
             shell=True,
             cwd=workdir,
-            stdin=sys.stdin,
+            stdin=_safe_stdin(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             preexec_fn=os.setsid if os.name != "nt" else None,
@@ -351,7 +366,7 @@ def run_bash_streamed(
             actual_cmd,
             shell=True,
             cwd=workdir,
-            stdin=sys.stdin,
+            stdin=_safe_stdin(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=0,  # unbuffered: readline() streams line by line
@@ -360,30 +375,64 @@ def run_bash_streamed(
 
         output_lines = []
         start_time = time.time()
+        timed_out = False
+        # Read on a daemon thread so a silent, blocking command cannot defeat
+        # the timeout by never producing a line to readline().
+        line_queue: "queue.Queue[Optional[bytes]]" = queue.Queue()
 
-        # Read line by line for real-time streaming
-        for line_bytes in iter(proc.stdout.readline, b""):
+        def _reader():
+            try:
+                for raw in iter(proc.stdout.readline, b""):
+                    line_queue.put(raw)
+            except Exception:
+                pass
+            finally:
+                line_queue.put(None)
+
+        reader = threading.Thread(target=_reader, daemon=True)
+        reader.start()
+
+        while True:
+            remaining = timeout_sec - (time.time() - start_time)
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                line_bytes = line_queue.get(timeout=min(remaining, 0.5))
+            except queue.Empty:
+                if proc.poll() is not None and line_queue.empty():
+                    break
+                continue
+            if line_bytes is None:
+                break
             line = line_bytes.decode("utf-8", errors="replace").rstrip()
             output_lines.append(line)
             yield {"partial": line}
 
-            if timeout_sec > 0 and (time.time() - start_time) > timeout_sec:
-                if os.name != "nt":
+        if timed_out:
+            if os.name != "nt":
+                try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                else:
+                except (ProcessLookupError, OSError):
                     proc.kill()
-                output = "\n".join(output_lines)
-                yield {
-                    "success": False,
-                    "output": output,
-                    "error": f"Command timed out after {timeout_ms}ms",
-                    "signal": "timeout",
-                    "exit_code": -1,
-                }
-                return
+            else:
+                proc.kill()
+            output = "\n".join(output_lines)
+            yield {
+                "success": False,
+                "output": output,
+                "error": f"Command timed out after {timeout_ms}ms",
+                "signal": "timeout",
+                "exit_code": -1,
+            }
+            return
 
         proc.stdout.close()
-        proc.wait()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
 
         output = "\n".join(output_lines)
         output = _add_noop_reminder(output, cmd)

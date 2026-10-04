@@ -26,8 +26,10 @@ DESCRIPTION_FULL = """Manage a structured todo list for the current workspace.
 Actions:
 - list: show all todos
 - add: add one or more items (content string, or items list)
+- set: replace the whole plan (items list of strings or {content,status})
 - update: change status/content of an item by id
-- clear: remove completed/cancelled items (or all if force=true)"""
+- clear: remove completed/cancelled items (or all if force=true)
+Keep exactly one item in_progress."""
 
 
 def _path(workspace_dir: str) -> str:
@@ -71,7 +73,7 @@ def todo(
     action: str,
     workspace_dir: str,
     content: Optional[str] = None,
-    items: Optional[List[str]] = None,
+    items: Optional[list] = None,
     id: Optional[str] = None,
     status: Optional[str] = None,
     force: bool = False,
@@ -81,6 +83,41 @@ def todo(
 
     if action == "list":
         return {"success": True, "stdout": _format(data), "items": data}
+
+    if action == "set":
+        if not items:
+            return {"success": False, "stdout": "Provide items to set the plan."}
+        valid_status = ("pending", "in_progress", "completed", "cancelled")
+        new_data: List[Dict[str, Any]] = []
+        for entry in items:
+            if isinstance(entry, dict):
+                text = str(entry.get("content") or entry.get("text") or "").strip()
+                st = entry.get("status") or "pending"
+            else:
+                text = str(entry).strip()
+                st = "pending"
+            if not text:
+                continue
+            if st not in valid_status:
+                st = "pending"
+            now = _now()
+            new_data.append({
+                "id": str(uuid.uuid4())[:8],
+                "content": text,
+                "status": st,
+                "created_at": now,
+                "updated_at": now,
+            })
+        # Enforce a single active step.
+        seen_active = False
+        for it in new_data:
+            if it["status"] == "in_progress":
+                if seen_active:
+                    it["status"] = "pending"
+                else:
+                    seen_active = True
+        _save(workspace_dir, new_data)
+        return {"success": True, "stdout": _format(new_data), "items": new_data}
 
     if action == "add":
         to_add: List[str] = []
@@ -106,6 +143,8 @@ def todo(
     if action == "update":
         if not id:
             return {"success": False, "stdout": "id is required for update."}
+        if status is not None and status not in ("pending", "in_progress", "completed", "cancelled"):
+            return {"success": False, "stdout": f"Invalid status: {status}"}
         found = False
         for it in data:
             if it.get("id") == id:
@@ -113,13 +152,17 @@ def todo(
                 if content is not None:
                     it["content"] = content
                 if status is not None:
-                    if status not in ("pending", "in_progress", "completed", "cancelled"):
-                        return {"success": False, "stdout": f"Invalid status: {status}"}
                     it["status"] = status
                 it["updated_at"] = _now()
                 break
         if not found:
             return {"success": False, "stdout": f"Todo id '{id}' not found."}
+        # Enforce a single active step so the plan stays unambiguous.
+        if status == "in_progress":
+            for it in data:
+                if it.get("id") != id and it.get("status") == "in_progress":
+                    it["status"] = "pending"
+                    it["updated_at"] = _now()
         _save(workspace_dir, data)
         return {"success": True, "stdout": _format(data), "items": data}
 

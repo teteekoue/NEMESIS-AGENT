@@ -73,33 +73,22 @@ class TestSearchReplace:
 
 class TestBash:
     def test_simple_command(self, tmp_path):
-        # Note: These tests may fail in pytest due to stdin redirection issues
-        # but work fine in normal execution
-        try:
-            result = run_bash(BashInput(command="echo hello_test"), str(tmp_path))
-            assert result.success is True
-            assert result.exit_code == 0
-            assert "hello_test" in result.output
-        except Exception:
-            pytest.skip("stdin redirection issue in pytest")
+        result = run_bash(BashInput(command="echo hello_test"), str(tmp_path))
+        assert result.success is True
+        assert result.exit_code == 0
+        assert "hello_test" in result.output
 
     def test_command_with_description(self, tmp_path):
-        try:
-            result = run_bash(
-                BashInput(command="echo done", description="Test echo"),
-                str(tmp_path),
-            )
-            assert "done" in result.output
-        except Exception:
-            pytest.skip("stdin redirection issue in pytest")
+        result = run_bash(
+            BashInput(command="echo done", description="Test echo"),
+            str(tmp_path),
+        )
+        assert "done" in result.output
 
     def test_failed_command(self, tmp_path):
-        try:
-            result = run_bash(BashInput(command="exit 1"), str(tmp_path))
-            assert result.success is False
-            assert result.exit_code == 1
-        except Exception:
-            pytest.skip("stdin redirection issue in pytest")
+        result = run_bash(BashInput(command="exit 1"), str(tmp_path))
+        assert result.success is False
+        assert result.exit_code == 1
 
 
 class TestGrep:
@@ -138,6 +127,8 @@ class TestListDir:
         assert "b.txt" in result.output
         assert "sub" in result.output or "sub/" in result.output
 
-    def test_default_path_is_cwd(self):
-        # Skip this test as /workspace may not exist in test environment
-        pytest.skip("Test requires /workspace directory to exist")
+    def test_default_path_is_workspace(self, tmp_path):
+        (tmp_path / "only.txt").write_text("x")
+        result = list_dir(ListDirInput(path=None, depth=1), str(tmp_path))
+        assert result.success is True
+        assert "only.txt" in result.output
