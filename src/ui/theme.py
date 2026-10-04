@@ -80,6 +80,18 @@ NEMESIS_THEME = Theme({
     "status.busy":          f"{Catppuccin.YELLOW}",
     "status.done":          f"{Catppuccin.GREEN}",
     "status.fail":          f"{Catppuccin.RED}",
+
+    # ── Short aliases used across the codebase ──
+    "error":                f"bold {Catppuccin.RED}",
+    "success":              f"bold {Catppuccin.GREEN}",
+    "warning":              f"bold {Catppuccin.YELLOW}",
+    "warn":                 f"bold {Catppuccin.YELLOW}",
+    "info":                 f"italic {Catppuccin.SUBTEXT0}",
+    "system":               f"italic {Catppuccin.SUBTEXT0}",
+    "user":                 f"bold {Catppuccin.GREEN}",
+    "ai":                   f"bold {Catppuccin.BLUE}",
+    "debug":                f"dim {Catppuccin.YELLOW}",
+    "ok":                   f"bold {Catppuccin.GREEN}",
 })
 
 

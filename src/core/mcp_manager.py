@@ -15,9 +15,56 @@ class MCPManager:
     def __init__(self, config_file: str = "mcp_config.yaml"):
         self.config_file = Path(config_file)
         self.servers: Dict[str, Any] = self._load_config()
+        self._pool: Dict[str, Any] = {}
 
     def reload(self) -> None:
         self.servers = self._load_config()
+
+    def get_pooled_client(self, name: str, timeout: float = 30.0):
+        """Return a long-lived, initialized client for the named server.
+
+        Reuses a running session when available so MCP tools keep their state
+        and avoid a process spawn per call. Falls back to a fresh client if the
+        pooled one died. Caller must NOT close pooled clients.
+        """
+        self.reload()
+        if name not in self.servers:
+            return None
+        client = self._pool.get(name)
+        if client is not None:
+            proc = getattr(client, "process", None)
+            if proc is None or proc.poll() is None:
+                return client
+            self._pool.pop(name, None)
+        from src.core.mcp_client import SimpleMCPClient
+
+        server_cfg = self.servers[name]
+        if not isinstance(server_cfg, dict):
+            return None
+        command, args = self._parse_command(server_cfg)
+        env = server_cfg.get("env") or {}
+        if env and not isinstance(env, dict):
+            env = {}
+        cwd = server_cfg.get("cwd")
+        client = SimpleMCPClient(
+            command,
+            args,
+            env={str(k): str(v) for k, v in env.items()},
+            timeout=timeout,
+            cwd=str(cwd) if cwd else None,
+        )
+        client.initialize()
+        self._pool[name] = client
+        return client
+
+    def close_pool(self) -> None:
+        """Shut down every pooled client."""
+        for client in list(self._pool.values()):
+            try:
+                client.close()
+            except Exception:
+                pass
+        self._pool.clear()
 
     def _load_config(self) -> Dict[str, Any]:
         if not self.config_file.exists():

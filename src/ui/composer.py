@@ -19,7 +19,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.clipboard import InMemoryClipboard
 
 from src.core.commands import registry
-from .theme import Catppuccin
+from .theme import Catppuccin, NEMESIS_THEME
 from .chat_ui import ChatUI
 
 
@@ -61,10 +61,11 @@ class Composer:
     AUTH_TITLE = "authorization  [y / n / a]"
 
     def __init__(self, version: str | None = None):
-        self.console = Console()
+        self.console = Console(theme=NEMESIS_THEME)
         self.chat = ChatUI(self.console)
         self._is_tty = sys.stdin.isatty()
         self._version = version  # compatibility only; never displayed
+        self.interrupt_requested = False
         if self._is_tty:
             self._init_pt()
 
@@ -117,6 +118,9 @@ class Composer:
         @kb.add("c-c")
         @kb.add("c-d")
         def _interrupt(event):
+            # Signal the agent loop that the user cancelled the current prompt
+            # (e.g. an authorization request or an interactive command input).
+            self.interrupt_requested = True
             event.app.exit(result=None)
 
         @kb.add("escape")

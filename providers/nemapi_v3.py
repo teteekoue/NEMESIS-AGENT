@@ -62,8 +62,11 @@ class NemapiV3Provider(BaseProvider):
         self._models_cache: List[Dict[str, Any]] = []
         
         self.timeout = int(self.provider_config.get("timeout", 180))
-        self.max_retries = 3
-        self.retry_delay = 3
+        self.max_retries = int(self.provider_config.get("max_retries", 3))
+        self.retry_delay = float(self.provider_config.get("retry_delay", 2))
+        # Only transient errors are worth retrying; a 4xx is a client/config
+        # mistake that will not fix itself by repeating the request.
+        self._retryable_status = {429, 500, 502, 503, 504}
         self._conversation: List[Dict[str, str]] = []
         self._session_started = False
 
@@ -99,10 +102,13 @@ class NemapiV3Provider(BaseProvider):
                         "display_name": item.get("display_name", str(item["id"]).replace("-", " ").title()),
                     })
             self._models_cache = models
-            if models and self.model not in {m["id"] for m in models}:
-                self.model = models[0]["id"]
+            # Do NOT silently mutate the active model when listing; that made
+            # /models report a different model than the saved config. The
+            # caller (models_command) is responsible for choosing one.
             return models
         except Exception:
+            # Swallow listing failures but still surface the cached value so
+            # /models can present something instead of an empty surprise.
             return list(self._models_cache)
 
     def send_message(self, message: str, role: str = "user") -> Dict[str, Any]:
@@ -145,8 +151,9 @@ class NemapiV3Provider(BaseProvider):
 
                 if resp.status_code != 200:
                     last_error = f"HTTP {resp.status_code}: {resp.text[:500]}"
-                    if attempt < self.max_retries:
-                        time.sleep(self.retry_delay)
+                    if resp.status_code in self._retryable_status and attempt < self.max_retries:
+                        # Exponential backoff for transient server errors.
+                        time.sleep(self.retry_delay * (2 ** (attempt - 1)))
                         continue
                     return {"success": False, "error": last_error}
 
@@ -192,9 +199,6 @@ class NemapiV3Provider(BaseProvider):
                 
                 # Si aucun contenu n'a été extrait, retourner une erreur
                 return {"success": False, "error": f"Aucun contenu extrait de la réponse: {text[:200]}"}
-
-                # Pas d'historique local inutile — on se comporte comme un bridge stateless
-                return {"success": True, "response": reply}
 
             except self.req.exceptions.Timeout:
                 last_error = f"Timeout après {self.timeout}s"

@@ -66,8 +66,6 @@ SERVER_MANAGED_PROVIDERS = ["nemapi"]
 # Etats de conversation
 AWAITING_PROVIDER_CONFIG = 1
 AWAITING_MODEL_SELECTION = 2
-AWAITING_CONFIRMATION = 3
-AWAITING_BRIDGE_HOST = 4
 AWAITING_NEMAPI_HOST = 5
 
 # Repertoire de stockage des configurations du bot
@@ -174,19 +172,31 @@ class NemesisTelegramBot:
             "port": int(default_nemapi.get("port") or 8080),
             "model": str(default_nemapi.get("model") or ""),
         }
+        # Access control: empty list = everyone allowed (backward compatible).
+        # Values can come from config (top-level or security) or env var.
+        raw_allowed = (
+            defaults.get("allowed_users")
+            or (defaults.get("security") or {}).get("allowed_users")
+            or os.getenv("TELEGRAM_ALLOWED_USERS", "")
+        ) if isinstance(defaults, dict) else os.getenv("TELEGRAM_ALLOWED_USERS", "")
+        if isinstance(raw_allowed, str):
+            raw_allowed = [x.strip() for x in raw_allowed.split(",") if x.strip()]
+        self.allowed_users = {str(x).strip() for x in (raw_allowed or []) if str(x).strip()}
         self.bot: Optional[Bot] = None
         self.app: Optional[Application] = None
         self.registry = None
         self.executor = ToolBridge(workspace=self.workspace)
-        self.parser = ActionParser()
+        self.parser = ActionParser.from_registry(self.executor.registry)
         self.providers: Dict[int, Any] = {}
         self._session_authorized_tools: Dict[int, set] = {}
+        # High-risk calls are authorized by exact signature (tool + params) so a
+        # one-time approval cannot be reused for a different destructive command.
+        self._session_authorized_signatures: Dict[int, set] = {}
         
         # Etats de conversation par chat
         self.chat_states: Dict[int, int] = {}
         
         # Donnees temporaires
-        self.pending_config: Dict[int, Dict[str, Any]] = {}
         self.pending_actions: Dict[int, Dict[str, Any]] = {}
         
         # Suivi du prompt système envoyé par chat
@@ -559,8 +569,27 @@ class NemesisTelegramBot:
     # GESTION DES MESSAGES
     # =============================================================================
 
+    def _is_user_allowed(self, update: Update) -> bool:
+        """Check the allow-list. Empty list means everyone is allowed."""
+        if not self.allowed_users:
+            return True
+        user = getattr(update, "effective_user", None)
+        candidates = set()
+        if user is not None:
+            if getattr(user, "id", None) is not None:
+                candidates.add(str(user.id))
+            if getattr(user, "username", None):
+                candidates.add(str(user.username))
+        chat = getattr(update, "effective_chat", None)
+        if chat is not None and getattr(chat, "id", None) is not None:
+            candidates.add(str(chat.id))
+        return bool(candidates & self.allowed_users)
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Gere les messages texte."""
+        if not self._is_user_allowed(update):
+            logger.warning("Message refusé d'un utilisateur non autorisé")
+            return
         chat_id = update.effective_chat.id
         message_text = update.message.text
         
@@ -573,36 +602,7 @@ class NemesisTelegramBot:
         if chat_id in self.chat_states:
             state = self.chat_states[chat_id]
             
-            if state == AWAITING_BRIDGE_HOST:
-                if ":" in message_text:
-                    parts = message_text.split(":", 1)
-                    host = parts[0].strip()
-                    try:
-                        port = int(parts[1].strip())
-                        config["bridge"] = {"host": host, "port": port}
-                        config["provider"]["type"] = "bridge"
-                        self._save_chat_config(chat_id, config)
-                        
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"[OK] Bridge configure: {host}:{port}"
-                        )
-                        self.chat_states.pop(chat_id, None)
-                        return
-                    except ValueError:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text="[ERROR] Port invalide. Format: host:port (ex: 192.168.1.67:8080)"
-                        )
-                        return
-                else:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text="[ERROR] Format invalide. Utilisez: host:port"
-                    )
-                    return
-            
-            elif state == AWAITING_NEMAPI_HOST:
+            if state == AWAITING_NEMAPI_HOST:
                 if ":" in message_text:
                     parts = message_text.split(":", 1)
                     host = parts[0].strip()
@@ -649,11 +649,9 @@ class NemesisTelegramBot:
                 return
             
             # Vérifier si c'est un outil direct
-            tool_result = await self._handle_message_with_tools(message_text, chat_id, context)
-            if tool_result:
-                if self._is_sensitive_tool(message_text):
-                    await self._ask_for_confirmation(update, context, message_text)
-                else:
+            handled, tool_result = await self._handle_message_with_tools(message_text, chat_id, context)
+            if handled:
+                if tool_result:
                     await context.bot.send_message(chat_id=chat_id, text=tool_result)
                 return
         
@@ -676,15 +674,9 @@ class NemesisTelegramBot:
             return
         
         # Verifier si c'est un appel d'outil direct
-        tool_result = await self._handle_message_with_tools(message_text, chat_id, context)
-        if tool_result:
-            # Déterminer le nom de l'outil depuis le message
-            tool_name = self._extract_tool_name(message_text)
-            if tool_name and self._is_sensitive_tool(tool_name):
-                # Extraire les paramètres pour la confirmation
-                params = self._extract_tool_params(message_text, tool_name)
-                await self._ask_for_confirmation(update, context, tool_name, params)
-            else:
+        handled, tool_result = await self._handle_message_with_tools(message_text, chat_id, context)
+        if handled:
+            if tool_result:
                 await context.bot.send_message(chat_id=chat_id, text=tool_result)
             return
         
@@ -696,11 +688,14 @@ class NemesisTelegramBot:
     # OUTILS
     # =============================================================================
 
-    async def _handle_message_with_tools(self, message: str, chat_id: int, 
-                                        context: ContextTypes.DEFAULT_TYPE) -> Optional[str]:
-        """Traite un message qui peut contenir des appels d'outils."""
+    async def _handle_message_with_tools(self, message: str, chat_id: int,
+                                        context: ContextTypes.DEFAULT_TYPE, update=None):
+        """Traite un message qui peut contenir des appels d'outils.
+
+        Returns (handled, result_text). handled=True means the message was a
+        direct tool call (already executed or awaiting confirmation)."""
         message_stripped = message.strip()
-        
+
         # Outils directs avec prefixe
         tool_prefixes = {
             'bash:': ('bash', lambda m: {'command': m[5:].strip()}),
@@ -711,58 +706,71 @@ class NemesisTelegramBot:
             'search:': ('web_search', lambda m: {'query': m[7:].strip()}),
             'fetch:': ('web_fetch', lambda m: self._parse_fetch(m)),
         }
-        
+
         for prefix, (tool_name, parser) in tool_prefixes.items():
             if message_stripped.lower().startswith(prefix):
                 params = parser(message_stripped)
-                result = await self._execute_tool(tool_name, params, chat_id, context)
-                return self._format_tool_result_for_display(result)
-        
+                return await self._authorize_and_execute(
+                    update, context, tool_name, params, chat_id
+                )
+
         # Détection des appels d'outils au format JSON avec code fence
-        # Format: ```
-        # {
-        #   "tool": "nom_outil",
-        #   "parameters": { ... }
-        # }
-        # ```
         import re
         json_block_pattern = r'```(?:)?\s*(\{[^`]*\})\s*```'
         matches = re.findall(json_block_pattern, message_stripped, re.DOTALL)
-        
+
         for json_str in matches:
             try:
                 tool_call = json.loads(json_str.strip())
                 if 'tool' in tool_call and 'parameters' in tool_call:
-                    # Vérifier si l'outil est sensible
-                    tool_name = tool_call['tool']
-                    params = tool_call['parameters']
-                    
-                    # Demander confirmation pour les outils sensibles
-                    if self._is_sensitive_tool(tool_name):
-                        # La confirmation sera gérée par le système d'autorisation
-                        pass
-                    
-                    result = await self._execute_tool(tool_name, params, chat_id, context)
-                    return self._format_tool_result_for_display(result)
+                    return await self._authorize_and_execute(
+                        update, context, tool_call['tool'], tool_call['parameters'], chat_id
+                    )
             except json.JSONDecodeError:
                 continue
-        
+
         # JSON tool call simple (sans code fence)
         if message_stripped.startswith('{') and message_stripped.endswith('}'):
             try:
                 tool_call = json.loads(message_stripped)
                 if 'tool' in tool_call and 'parameters' in tool_call:
-                    result = await self._execute_tool(
-                        tool_call['tool'],
-                        tool_call['parameters'],
-                        chat_id,
-                        context
+                    return await self._authorize_and_execute(
+                        update, context, tool_call['tool'], tool_call['parameters'], chat_id
                     )
-                    return self._format_tool_result_for_display(result)
             except json.JSONDecodeError:
                 pass
-        
-        return None
+
+        return False, None
+
+    @staticmethod
+    def _auth_signature(tool_name: str, params: Dict[str, Any]) -> str:
+        import hashlib
+        try:
+            blob = json.dumps(params, sort_keys=True, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            blob = repr(params)
+        return f"{tool_name}:{hashlib.sha256(blob.encode('utf-8', 'replace')).hexdigest()}"
+
+    async def _authorize_and_execute(self, update, context, tool_name: str,
+                                     params: Dict[str, Any], chat_id: int):
+        """Authorize a direct (prefixed/JSON) tool call before executing it.
+
+        Read-only tools run immediately. Every other tool requires explicit
+        confirmation, mirroring the CLI behaviour. Returns (handled, result)."""
+        if not tool_name:
+            return False, None
+        risk = self.executor.risk_for(tool_name, params)
+        if risk != "read":
+            authorized = self._session_authorized_tools.get(chat_id, set())
+            signatures = self._session_authorized_signatures.get(chat_id, set())
+            signature = self._auth_signature(tool_name, params)
+            if tool_name not in authorized and signature not in signatures:
+                if update is not None:
+                    await self._ask_for_confirmation(update, context, tool_name, params)
+                    return True, None
+                return True, "[ERROR] Autorisation requise; aucune confirmation possible."
+        result = await self._execute_tool(tool_name, params, chat_id, context)
+        return True, self._format_tool_result_for_display(result)
     
     def _parse_write(self, message: str) -> Dict[str, Any]:
         """Parse un message write:"""
@@ -778,102 +786,27 @@ class NemesisTelegramBot:
         fmt = parts[1].strip() if len(parts) > 1 else 'markdown'
         return {'url': url, 'format': fmt}
 
-    def _is_sensitive_tool(self, tool_name: str) -> bool:
-        """Verifie si l'outil est sensible - toujours False car les autorisations sont désactivées."""
-        return False
-    
-    def _extract_tool_name(self, message: str) -> Optional[str]:
-        """Extrait le nom de l'outil depuis un message."""
-        # Vérifier les prefixes d'outils directs
-        tool_prefixes = ['bash:', 'read:', 'write:', 'grep:', 'list:', 'search:', 'fetch:']
-        for prefix in tool_prefixes:
-            if message.lower().startswith(prefix):
-                return prefix[:-1]  # retourne 'bash', 'read', etc.
-        
-        # Vérifier le format JSON
-        import re
-        json_pattern = r'\{\s*"tool"\s*:\s*"([^"]+)"'
-        match = re.search(json_pattern, message)
-        if match:
-            return match.group(1)
-        
-        # Vérifier les blocs JSON dans les code fences
-        json_block_pattern = r'```(?:)?\s*\{\s*"tool"\s*:\s*"([^"]+)"'
-        match = re.search(json_block_pattern, message, re.DOTALL)
-        if match:
-            return match.group(1)
-        
-        return None
-    
-    def _extract_tool_params(self, message: str, tool_name: str) -> Dict[str, Any]:
-        """Extrait les paramètres d'un outil depuis un message."""
-        params = {}
-        
-        # Pour les prefixes directs
-        if message.lower().startswith(f"{tool_name}:"):
-            content = message[len(tool_name)+1:].strip()
-            if tool_name == 'bash':
-                params['command'] = content
-            elif tool_name == 'read':
-                params['path'] = content
-            elif tool_name == 'write':
-                parts = content.split('|', 1)
-                if len(parts) >= 2:
-                    params['file_path'] = parts[0].strip()
-                    params['content'] = parts[1].strip()
-            elif tool_name == 'grep':
-                params['pattern'] = content
-            elif tool_name == 'list':
-                params['path'] = content or None
-            elif tool_name == 'search':
-                params['query'] = content
-            elif tool_name == 'fetch':
-                parts = content.split('|', 1)
-                params['url'] = parts[0].strip()
-                params['format'] = parts[1].strip() if len(parts) > 1 else 'markdown'
-            return params
-        
-        # Pour le format 
-        import re
-        json_pattern = r'\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*({[^}]+)\s*\}'
-        match = re.search(json_pattern, message, re.DOTALL)
-        if match:
-            try:
-                param_str = match.group(1)
-                # Remplacer les guillemets simples par des guillemets doubles pour le parsing
-                param_str = re.sub(r"'([^']+)'", r'"\1"', param_str)
-                params = json.loads(param_str)
-                return params
-            except json.JSONDecodeError:
-                pass
-        
-        # Pour les blocs  dans les code fences
-        json_block_pattern = r'```(?:json)?\s*\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*({[^}]+)\s*\}\s*```'
-        match = re.search(json_block_pattern, message, re.DOTALL)
-        if match:
-            try:
-                param_str = match.group(1)
-                param_str = re.sub(r"'([^']+)'", r'"\1"', param_str)
-                params = json.loads(param_str)
-                return params
-            except json.JSONDecodeError:
-                pass
-        
-        return params
-
     async def _ask_for_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE, tool_name: str, params: Dict[str, Any]):
         """Demande confirmation pour un outil avec boutons y/n/a (comme dans CLI)."""
-        chat_id = update.effective_chat.id
+        effective = getattr(update, "effective_chat", None)
+        if effective is not None:
+            chat_id = effective.id
+        elif getattr(update, "message", None) is not None:
+            chat_id = update.message.chat_id
+        else:
+            chat_id = update.callback_query.message.chat_id
         
-        # Stocker les informations pour le callback
-        self.pending_actions[chat_id] = {
+        # Stocker les informations pour le callback en préservant le contexte
+        # de reprise éventuellement déjà posé par la boucle agent.
+        pending = self.pending_actions.setdefault(chat_id, {})
+        pending.update({
             "tool_name": tool_name,
             "params": params,
             "action_type": tool_name,
             "action_content": params,
-            "timestamp": time.time()
-        }
-        
+            "timestamp": time.time(),
+        })
+
         # Boutons comme dans le CLI : y, n, a
         keyboard = [
             [
@@ -882,22 +815,22 @@ class NemesisTelegramBot:
                 InlineKeyboardButton("Toujours (a)", callback_data="tool_always")
             ]
         ]
-        
+
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         params_str = "\n".join([f"  {k}: {v}" for k, v in params.items()]) if params else "(aucun paramètre)"
-        
+        risk = self.executor.risk_for(tool_name, params) if hasattr(self.executor, "risk_for") else "medium"
+
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"[WARN] *Confirmation requise*\n\n"
-                 f"Outil: `{tool_name}`\n"
-                 f"Paramètres:\n```\n{params_str}\n```\n\n"
+            text=f"[WARN] Confirmation requise (risque: {risk})\n\n"
+                 f"Outil: {tool_name}\n"
+                 f"Paramètres:\n{params_str}\n\n"
                  f"Autoriser cette action ?\n"
                  f"  • Oui (y) - Une seule fois\n"
                  f"  • Non (n) - Refuser\n"
                  f"  • Toujours (a) - Autoriser pour la session",
             reply_markup=reply_markup,
-            parse_mode="Markdown"
         )
 
     async def _execute_tool(self, tool_name: str, parameters: Dict[str, Any],
@@ -953,20 +886,16 @@ class NemesisTelegramBot:
 
     async def _process_ai_request(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
                                   message: str, chat_id: int):
-        """Traite une requete pour l'IA - version simplifiée sans autorisations."""
-        config = self._get_chat_config(chat_id)
-        provider_type = "nemapi"
-        model = config.get("nemapi", {}).get("model", "")
-        
+        """Traite une requete pour l'IA avec autorisation des outils."""
         provider = self._get_provider(chat_id)
         if not provider:
             await context.bot.send_message(chat_id=chat_id, text="[ERROR] Provider non disponible")
             return
-        
+
         # Envoyer le prompt système si nécessaire
         if not self.prompt_system_sent.get(chat_id, False):
             await self._send_system_prompt(chat_id)
-        
+
         # Afficher un message de statut
         status_msg = None
         try:
@@ -976,101 +905,107 @@ class NemesisTelegramBot:
             )
         except Exception:
             pass
-        
-        try:
-            # Boucle de traitement avec l'IA (autorisations désactivées)
-            current_input = message
-            current_role = "user"
-            iteration = 0
-            max_iterations = 10
-            last_ai_text = ""  # Stocke le dernier message de l'IA
-            
-            while iteration < max_iterations:
-                iteration += 1
-                
-                # Envoyer à l'IA
-                try:
-                    result = provider.send_message(current_input, role=current_role)
-                except TypeError:
-                    result = provider.send_message(current_input)
-                
-                if not result or not isinstance(result, dict):
-                    await self._cleanup_thinking_message(context, chat_id, status_msg)
-                    await context.bot.send_message(chat_id=chat_id, text="[ERROR] Réponse invalide")
-                    return
-                
-                if not result.get("success"):
-                    await self._cleanup_thinking_message(context, chat_id, status_msg)
-                    error = result.get('error', 'Erreur inconnue')
-                    await context.bot.send_message(chat_id=chat_id, text=f"[ERROR] {error}")
-                    return
-                
-                # Parser la réponse
-                raw_response = result.get('response', '')
-                parsed = self.parser.parse(raw_response)
-                
-                # Extraire le texte de l'IA (filtrer les blocs JSON d'appels d'outils)
-                display_text = parsed.get('text', '')
-                action = parsed.get('action')
-                
-                # Ne stocker que le dernier message de l'IA qui n'est pas un feedback
-                if display_text and not display_text.startswith("FEEDBACK:"):
-                    # Nettoyer les blocs JSON d'appels d'outils
-                    import re
-                    clean_text = re.sub(r'```\s*\{[^`]*\}\s*```', '', display_text, flags=re.DOTALL)
-                    clean_text = re.sub(r'```\s*\{[^`]*\}\s*```', '', clean_text, flags=re.DOTALL)
-                    clean_text = re.sub(r'\{\s*"tool"\s*:.*?\}', '', clean_text, flags=re.DOTALL)
-                    clean_text = clean_text.strip()
-                    if clean_text:
-                        last_ai_text = clean_text
-                
-                # Execute every call in the model turn, preserving order.
-                actions = parsed.get("actions") or ([action] if action else [])
-                if not actions:
-                    break
-                feedback_parts = []
-                for action_item in actions:
-                    act_type = action_item.get('type', '')
-                    act_content = action_item.get('content', {})
-                    risk = self.executor.risk_for(act_type, act_content) if hasattr(self.executor, "risk_for") else "medium"
-                    authorized = self._session_authorized_tools.get(chat_id, set())
-                    if risk == "high" and act_type not in authorized:
-                        await self._ask_for_confirmation(update, context, act_type, act_content)
-                        await self._cleanup_thinking_message(context, chat_id, status_msg)
-                        return
-                    tool_result = await self._execute_tool(act_type, act_content, chat_id, context)
-                    if isinstance(tool_result, dict):
-                        if tool_result.get('success'):
-                            feedback_parts.append(
-                                f"Tool: {act_type}\nSuccess: true\nOutput:\n"
-                                f"{tool_result.get('content', tool_result.get('output', 'OK'))}"
-                            )
-                        else:
-                            feedback_parts.append(
-                                f"Tool: {act_type}\nSuccess: false\nError:\n"
-                                f"{tool_result.get('error', 'Erreur inconnue')}"
-                            )
-                    else:
-                        feedback_parts.append(f"Tool: {act_type}\nSuccess: true\nOutput:\n{tool_result}")
 
-                current_input = "FEEDBACK:\n" + "\n\n".join(feedback_parts)
-                current_role = "tool_result"
-            
-            # Supprimer le message de statut
-            await self._cleanup_thinking_message(context, chat_id, status_msg)
-            
-            # Envoyer la réponse finale (seul le dernier message)
-            if last_ai_text:
-                formatted_response = self._format_ai_response([last_ai_text], provider_type, model)
-                # Découper si le message est trop long
-                await self._send_long_message(context, chat_id, formatted_response)
-            else:
-                await context.bot.send_message(chat_id=chat_id, text="[INFO] Aucune réponse textuelle générée.")
-            
+        try:
+            await self._run_agent_loop(update, context, chat_id, message, "user", status_msg)
         except Exception as e:
             await self._cleanup_thinking_message(context, chat_id, status_msg)
             logger.error(f"Erreur dans _process_ai_request: {e}")
             await context.bot.send_message(chat_id=chat_id, text=f"[ERROR] Erreur: {str(e)[:1000]}")
+
+    async def _run_agent_loop(self, update, context, chat_id: int, current_input: str,
+                              current_role: str, status_msg, last_ai_text: str = ""):
+        """Agent turn loop. Pauses and asks confirmation via buttons when a tool
+        requires authorization; the button handler resumes the loop with FEEDBACK."""
+        provider = self._get_provider(chat_id)
+        if not provider:
+            return
+        config = self._get_chat_config(chat_id)
+        model = config.get("nemapi", {}).get("model", "")
+
+        iteration = 0
+        max_iterations = 10
+        while iteration < max_iterations:
+            iteration += 1
+            try:
+                result = provider.send_message(current_input, role=current_role)
+            except TypeError:
+                result = provider.send_message(current_input)
+
+            if not result or not isinstance(result, dict):
+                await self._cleanup_thinking_message(context, chat_id, status_msg)
+                await context.bot.send_message(chat_id=chat_id, text="[ERROR] Réponse invalide")
+                return
+
+            if not result.get("success"):
+                await self._cleanup_thinking_message(context, chat_id, status_msg)
+                error = result.get('error', 'Erreur inconnue')
+                await context.bot.send_message(chat_id=chat_id, text=f"[ERROR] {error}")
+                return
+
+            raw_response = result.get('response', '')
+            parsed = self.parser.parse(raw_response)
+            display_text = parsed.get('text', '')
+            action = parsed.get('action')
+
+            if display_text and not display_text.startswith("FEEDBACK:"):
+                import re
+                clean_text = re.sub(r'```\s*\{[^`]*\}\s*```', '', display_text, flags=re.DOTALL)
+                clean_text = re.sub(r'\{\s*"tool"\s*:.*?\}', '', clean_text, flags=re.DOTALL)
+                clean_text = clean_text.strip()
+                if clean_text:
+                    last_ai_text = clean_text
+
+            actions = parsed.get("actions") or ([action] if action else [])
+            if not actions:
+                break
+
+            feedback_parts = []
+            for action_item in actions:
+                act_type = action_item.get('type', '')
+                act_content = action_item.get('content', {})
+                risk = self.executor.risk_for(act_type, act_content) if hasattr(self.executor, "risk_for") else "medium"
+                authorized = self._session_authorized_tools.get(chat_id, set())
+                signatures = self._session_authorized_signatures.get(chat_id, set())
+                signature = self._auth_signature(act_type, act_content)
+                if risk != "read" and act_type not in authorized and signature not in signatures:
+                    # Store context so the button handler can resume the loop.
+                    self.pending_actions[chat_id] = {
+                        "tool_name": act_type,
+                        "params": act_content,
+                        "action_type": act_type,
+                        "action_content": act_content,
+                        "last_ai_text": last_ai_text,
+                        "status_msg": status_msg,
+                        "timestamp": time.time(),
+                        "resume": True,
+                    }
+                    await self._ask_for_confirmation(update, context, act_type, act_content)
+                    return
+                tool_result = await self._execute_tool(act_type, act_content, chat_id, context)
+                if isinstance(tool_result, dict):
+                    if tool_result.get('success'):
+                        feedback_parts.append(
+                            f"Tool: {act_type}\nSuccess: true\nOutput:\n"
+                            f"{tool_result.get('content', tool_result.get('output', 'OK'))}"
+                        )
+                    else:
+                        feedback_parts.append(
+                            f"Tool: {act_type}\nSuccess: false\nError:\n"
+                            f"{tool_result.get('error', 'Erreur inconnue')}"
+                        )
+                else:
+                    feedback_parts.append(f"Tool: {act_type}\nSuccess: true\nOutput:\n{tool_result}")
+
+            current_input = "FEEDBACK:\n" + "\n\n".join(feedback_parts)
+            current_role = "tool_result"
+
+        await self._cleanup_thinking_message(context, chat_id, status_msg)
+        if last_ai_text:
+            formatted_response = self._format_ai_response([last_ai_text], "nemapi", model)
+            await self._send_long_message(context, chat_id, formatted_response)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="[INFO] Aucune réponse textuelle générée.")
 
     async def _cleanup_thinking_message(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, thinking_msg):
         """Supprime le message 'réfléchit' si possible."""
@@ -1247,6 +1182,9 @@ class NemesisTelegramBot:
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Gere les callbacks des boutons inline."""
         query = update.callback_query
+        if not self._is_user_allowed(update):
+            await query.answer("Acces refuse.", show_alert=True)
+            return
         await query.answer()
         
         chat_id = query.message.chat_id
@@ -1256,7 +1194,6 @@ class NemesisTelegramBot:
         if data == "cancel":
             await query.edit_message_text("[ERROR] Operation annulee.")
             self.chat_states.pop(chat_id, None)
-            self.pending_config.pop(chat_id, None)
         
         elif data.startswith("provider_"):
             provider_type = data[9:]
@@ -1289,129 +1226,67 @@ class NemesisTelegramBot:
             )
             self.chat_states.pop(chat_id, None)
         
-        elif data == "confirm_yes":
-            if chat_id in self.pending_config:
-                pending = self.pending_config[chat_id]
-                message = pending.get("message", "")
-                result = await self._handle_message_with_tools(message, chat_id, context)
-                if result:
-                    await context.bot.send_message(chat_id=chat_id, text=result)
-                await query.edit_message_text("[OK] Operation confirmee.")
-                self.pending_config.pop(chat_id, None)
-            else:
-                await query.edit_message_text("[ERROR] Aucune operation en attente.")
-        
-        elif data == "confirm_no":
-            self.pending_config.pop(chat_id, None)
-            await query.edit_message_text("[ERROR] Operation annulee.")
-        
-        elif data == "tool_yes":
-            # Autoriser l'outil une seule fois
+        elif data in ("tool_yes", "tool_always"):
+            # Autoriser l'outil (une fois) ou pour la session
             if chat_id in self.pending_actions:
-                pending = self.pending_actions[chat_id]
+                pending = self.pending_actions.pop(chat_id)
                 tool_name = pending.get("tool_name", "")
                 params = pending.get("params", {})
-                
-                # Exécuter l'outil
+                resume = pending.get("resume", False)
+                last_ai_text = pending.get("last_ai_text", "")
+                status_msg = pending.get("status_msg")
+                risk = self.executor.risk_for(tool_name, params) if hasattr(self.executor, "risk_for") else "medium"
+
+                if data == "tool_always":
+                    if risk == "high":
+                        self._session_authorized_signatures.setdefault(chat_id, set()).add(
+                            self._auth_signature(tool_name, params)
+                        )
+                    else:
+                        self._session_authorized_tools.setdefault(chat_id, set()).add(tool_name)
+
                 result = await self._execute_tool(tool_name, params, chat_id, context)
-                
-                # Envoyer le résultat
-                if result and result.get('success'):
-                    await query.edit_message_text(f"[OK] Outil '{tool_name}' exécuté avec succès")
-                    # Envoyer le contenu si disponible
-                    content = result.get('content', result.get('output', ''))
-                    if content:
-                        await context.bot.send_message(chat_id=chat_id, text=f"Résultat:\n```\n{content[:1000]}\n```", parse_mode="Markdown")
+
+                if not resume:
+                    # Direct (prefixed/JSON) call: just report the result.
+                    if result and result.get('success'):
+                        await query.edit_message_text(f"[OK] Outil '{tool_name}' exécuté avec succès")
+                        content = result.get('content', result.get('output', ''))
+                        if content:
+                            await context.bot.send_message(chat_id=chat_id, text=f"Résultat:\n{content[:1000]}")
+                    else:
+                        error = result.get('error', 'Erreur inconnue') if result else 'Erreur'
+                        await query.edit_message_text(f"[ERROR] Échec de l'outil '{tool_name}': {error}")
+                    return
+
+                # Agent-loop call: resume the loop with the tool feedback.
+                await query.edit_message_text(f"[OK] Outil '{tool_name}' autorisé.")
+                if isinstance(result, dict) and result.get('success'):
+                    feedback = (f"Tool: {tool_name}\nSuccess: true\nOutput:\n"
+                                f"{result.get('content', result.get('output', 'OK'))}")
                 else:
-                    error = result.get('error', 'Erreur inconnue') if result else 'Erreur' 
-                    await query.edit_message_text(f"[ERROR] Échec de l'outil '{tool_name}': {error}")
-                
-                self.pending_actions.pop(chat_id, None)
+                    error = result.get('error', 'Erreur inconnue') if isinstance(result, dict) else str(result)
+                    feedback = f"Tool: {tool_name}\nSuccess: false\nError:\n{error}"
+                await self._run_agent_loop(
+                    update, context, chat_id, "FEEDBACK:\n" + feedback,
+                    "tool_result", status_msg, last_ai_text,
+                )
             else:
                 await query.edit_message_text("[ERROR] Aucune action en attente.")
-        
+
         elif data == "tool_no":
             # Refuser l'outil
             if chat_id in self.pending_actions:
-                self.pending_actions.pop(chat_id, None)
-                await query.edit_message_text("[ERROR] Exécution de l'outil annulée.")
-            else:
-                await query.edit_message_text("[ERROR] Aucune action en attente.")
-        
-        elif data == "tool_always":
-            # Autoriser toujours pour la session
-            if chat_id in self.pending_actions:
-                pending = self.pending_actions[chat_id]
+                pending = self.pending_actions.pop(chat_id)
                 tool_name = pending.get("tool_name", "")
-                params = pending.get("params", {})
-                
-                # Ajouter l'outil aux autorisations de session
-                # Pour l'instant on exécute et on note que c'est autorisé pour la session
-                result = await self._execute_tool(tool_name, params, chat_id, context)
-                
-                # Marquer l'outil comme autorisé pour la session
-                self._session_authorized_tools.setdefault(chat_id, set()).add(tool_name)
-                
-                if result and result.get('success'):
-                    await query.edit_message_text(f"[OK] Outil '{tool_name}' autorisé pour la session et exécuté avec succès")
-                    content = result.get('content', result.get('output', ''))
-                    if content:
-                        await context.bot.send_message(chat_id=chat_id, text=f"Résultat:\n```\n{content[:1000]}\n```", parse_mode="Markdown")
-                else:
-                    error = result.get('error', 'Erreur inconnue') if result else 'Erreur'
-                    await query.edit_message_text(f"[ERROR] Échec de l'outil '{tool_name}': {error}")
-                
-                self.pending_actions.pop(chat_id, None)
-            else:
-                await query.edit_message_text("[ERROR] Aucune action en attente.")
-        
-        elif data.startswith("confirm_tool_"):
-            # Gestion de la confirmation d'outil
-            chat_id_from_data = int(data.replace("confirm_tool_", ""))
-            if chat_id_from_data in self.pending_actions:
-                pending = self.pending_actions[chat_id_from_data]
-                
-                # Exécuter l'outil
-                act_type = pending['action_type']
-                act_content = pending['action_content']
-                tool_result = await self._execute_tool(act_type, act_content, chat_id_from_data, context)
-                
-                # Construire le feedback
-                if isinstance(tool_result, dict):
-                    if tool_result.get('success'):
-                        feedback = f"FEEDBACK:\nTool: {act_type}\nSuccess: true\nOutput:\n{tool_result.get('content', tool_result.get('output', 'OK'))}"
-                    else:
-                        feedback = f"FEEDBACK:\nTool: {act_type}\nSuccess: false\nError:\n{tool_result.get('error', 'Erreur inconnue')}"
-                else:
-                    feedback = f"FEEDBACK:\nTool: {act_type}\nSuccess: true\nOutput:\n{str(tool_result)}"
-                
-                # Envoyer le feedback à l'IA et continuer la conversation
-                provider = self._get_provider(chat_id_from_data)
-                if provider:
-                    result = provider.send_message(feedback, role="tool_result")
-                    if result and result.get('success'):
-                        raw_response = result.get('response', '')
-                        parsed = self.parser.parse(raw_response)
-                        display_text = parsed.get('text', '')
-                        
-                        if display_text and not display_text.startswith("FEEDBACK:"):
-                            # Envoyer la réponse
-                            config = self._get_chat_config(chat_id_from_data)
-                            provider_type = "nemapi"
-                            model = config.get("nemapi", {}).get("model", "")
-                            formatted_response = self._format_ai_response([display_text], provider_type, model)
-                            await context.bot.send_message(chat_id=chat_id_from_data, text=formatted_response)
-                
-                await query.edit_message_text("[OK] Outil exécuté et feedback envoyé à l'IA")
-                self.pending_actions.pop(chat_id_from_data, None)
-            else:
-                await query.edit_message_text("[ERROR] Aucune action en attente.")
-        
-        elif data.startswith("cancel_tool_"):
-            # Annulation de l'outil
-            chat_id_from_data = int(data.replace("cancel_tool_", ""))
-            if chat_id_from_data in self.pending_actions:
-                self.pending_actions.pop(chat_id_from_data, None)
+                if pending.get("resume"):
+                    await query.edit_message_text("[ERROR] Exécution annulée.")
+                    feedback = f"Tool: {tool_name}\nSuccess: false\nOutput:\n[EXECUTION REFUSEE PAR L'UTILISATEUR]"
+                    await self._run_agent_loop(
+                        update, context, chat_id, "FEEDBACK:\n" + feedback,
+                        "tool_result", pending.get("status_msg"), pending.get("last_ai_text", ""),
+                    )
+                    return
                 await query.edit_message_text("[ERROR] Exécution de l'outil annulée.")
             else:
                 await query.edit_message_text("[ERROR] Aucune action en attente.")

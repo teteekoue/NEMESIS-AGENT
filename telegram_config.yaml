@@ -12,10 +12,12 @@ workspace: "./workspace"
 # timeout: 30  # Timeout en secondes pour les requêtes
 # max_message_length: 4000  # Longueur maximale des messages (limite Telegram)
 
-# Autorisations (optionnel)
-# allowed_users:  # Liste des IDs utilisateurs autorisés (laisser vide pour tous)
+# Autorisations (recommande). Liste des IDs/username autorises.
+# Laisser vide autorise tout le monde (comportement historique).
+# Peut aussi etre defini via la variable d'environnement TELEGRAM_ALLOWED_USERS=id1,id2
+# allowed_users:
 #   - 123456789
-#   - 987654321
+#   - "mon_username"
 
 # Paramètres NEMAPI (optionnel)
 provider:

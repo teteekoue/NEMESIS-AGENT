@@ -20,7 +20,11 @@ except ImportError:  # pragma: no cover
 
 try:
     from rich.console import Console
-    console = Console()
+    try:
+        from src.ui.theme import NEMESIS_THEME
+        console = Console(theme=NEMESIS_THEME)
+    except Exception:
+        console = Console()
 except Exception:  # pragma: no cover
     class _Dummy:
         def print(self, *a, **k):

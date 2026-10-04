@@ -15,6 +15,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 from rich.table import Table
 from rich.box import ROUNDED, SQUARE, SIMPLE
+from .theme import NEMESIS_THEME
 from rich.live import Live
 from rich.align import Align
 from rich.style import Style
@@ -144,7 +145,7 @@ class ChatUI:
     """Slim chat interface."""
 
     def __init__(self, console: Optional[Console] = None):
-        self.console = console or Console()
+        self.console = console or Console(theme=NEMESIS_THEME)
         self.messages: List[Bubble] = []
         self._last_sender: Optional[str] = None
 
