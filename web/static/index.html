@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NEMESIS-CLI</title>
+<link rel="stylesheet" href="/assets/style.css?v=1791135311" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⌁</text></svg>" />
+</head>
+<body>
+<div id="app" class="terminal">
+  <header id="topbar">
+    <span class="brand">⌁ NEMESIS-CLI</span>
+    <span class="brand-sub">l'agent autonome de codage</span>
+    <span class="flex"></span>
+    <span id="tb-model" class="chip dim"></span>
+  </header>
+  <div id="transcript" class="transcript">
+    <div id="welcome" class="welcome">
+      <div class="welcome-panel">
+        <pre id="ascii-logo" class="ascii"></pre>
+        <div class="tagline">l'agent autonome de codage</div>
+        <div class="info-table">
+          <div class="row"><span class="k">provider</span><span class="v" id="w-provider">NEMAPI</span></div>
+          <div class="row"><span class="k">model</span><span class="v" id="w-model">—</span></div>
+          <div class="row"><span class="k">endpoint</span><span class="v" id="w-endpoint">—</span></div>
+          <div class="row"><span class="k">workspace</span><span class="v" id="w-workspace">—</span></div>
+          <div class="row"><span class="k">status</span><span class="v" id="w-status">not tested</span></div>
+        </div>
+        <div class="hints">
+          <code>/help</code> commandes <span class="sep">·</span>
+          <code>/resume</code> sessions <span class="sep">·</span>
+          <code>/status</code> session <span class="sep">·</span>
+          <kbd>Ctrl+K</kbd> palette <span class="sep">·</span>
+          <kbd>Ctrl+C</kbd> interrompre
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- barre de statut -->
+  <footer id="status-bar">
+    <span id="st-provider" class="chip"><i class="dot"></i><span class="label">—</span></span>
+    <span id="st-workspace" class="chip dim" title="workspace"></span>
+    <span id="st-mode" class="chip mode hidden">plan</span>
+    <span id="st-session" class="chip dim"></span>
+    <span id="st-state" class="chip state">prêt</span>
+    <span class="flex"></span>
+    <span class="dim kbd-hint">Ctrl+K commandes · ↑/↓ historique</span>
+  </footer>
+
+  <!-- saisie -->
+  <div id="composer">
+    <div id="cmd-menu" class="hidden"></div>
+    <div id="auth-ask" class="hidden auth-question"></div>
+    <div class="prompt-row">
+      <span class="prompt-sign">❯</span>
+      <textarea id="input" rows="1" spellcheck="false"
+        placeholder="Message ou /commande… (Shift+Entrée: multiligne)"></textarea>
+      <button id="btn-send" title="Envoyer (Entrée)">⏎</button>
+      <button id="btn-interrupt" class="danger hidden" title="Interrompre (Ctrl+C)">■ stop</button>
+    </div>
+  </div>
+</div>
+<script src="/assets/app.js?v=1791135311"></script>
+</body>
+</html>

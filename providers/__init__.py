@@ -4,10 +4,37 @@
 from typing import Dict, Any
 from providers.base import BaseProvider
 from providers.nemapi_v3 import NemapiV3Provider
+from providers.mock import MockProvider
 
 PROVIDER_MAP = {
     "nemapi": NemapiV3Provider,
+    "mock": MockProvider,
 }
+
+# Optional OpenAI-compatible providers. They are registered only when the
+# `openai` SDK is installed, so the base install keeps working without it.
+try:
+    from providers.openai_compatible import (
+        OpenAICompatibleProvider,
+        NvidiaNimProvider,
+        XaiProvider,
+        OpenRouterProvider,
+        OllamaProvider,
+        FireworksProvider,
+        CohereProvider,
+    )
+
+    PROVIDER_MAP.update({
+        "openai": OpenAICompatibleProvider,
+        "nvidia_nim": NvidiaNimProvider,
+        "xai": XaiProvider,
+        "openrouter": OpenRouterProvider,
+        "ollama": OllamaProvider,
+        "fireworks": FireworksProvider,
+        "cohere": CohereProvider,
+    })
+except Exception:  # pragma: no cover - optional dependency
+    pass
 
 
 def create_provider(config: Dict[str, Any]) -> BaseProvider:
@@ -21,10 +48,7 @@ def create_provider(config: Dict[str, Any]) -> BaseProvider:
         raise ValueError(
             f"Provider inconnu: '{provider_type}'. Disponibles: {available}"
         )
-
-    if provider_type in PROVIDER_MAP:
-        return provider_cls(config)
-    raise ValueError(f"Provider non supporte: {provider_type}")
+    return provider_cls(config)
 
 
 def list_providers() -> list:
