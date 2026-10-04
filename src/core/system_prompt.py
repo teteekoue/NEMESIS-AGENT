@@ -67,6 +67,13 @@ concrete plan before substantial implementation, mark exactly one active step
 `in_progress`, update it as work advances, and mark steps completed only after
 verification. Keep the plan synchronized with reality.
 
+## Long-term memory
+
+Use the `memory` tool to persist durable, reusable knowledge across sessions
+(project conventions, key decisions, user preferences, important paths). Use
+`memory` with `action: "search"` to recall relevant facts before acting, and
+`action: "set"` to store them. Do not store transient details or secrets.
+
 ## Completion
 
 Stop when the request is complete and verified. Summarize changed files, validation performed, and any remaining limitation.

@@ -301,11 +301,18 @@ class ActionExecutor:
         yield result
 
     def execute_grep(self, pattern: str, path: str = ".", include: str = None, case_insensitive: bool = False):
-        """Handler JSON pour l'outil grep."""
+        """Handler JSON pour l'outil grep (delegue au handler moderne)."""
         try:
-            from src.core.tools.grep_tool import grep_files
-            result = grep_files(pattern, path, include, case_insensitive)
-            yield result
+            from src.core.tools.grep import grep, GrepInput
+            result = grep(
+                GrepInput(pattern=pattern, path=path, include=include,
+                          case_insensitive=case_insensitive),
+                str(self.workspace_root),
+            )
+            if getattr(result, "success", False):
+                yield {"success": True, "stdout": "\n".join(result.matches) or "Aucun résultat."}
+            else:
+                yield {"success": False, "stdout": result.error or "grep a échoué."}
         except Exception as e:
             yield {"success": False, "stdout": str(e)}
 
@@ -1487,9 +1494,12 @@ class ActionExecutor:
             yield {"success": True, "stdout": "\n".join(lines)}
             return
         if action == "clear":
-            if force or True:
-                store.write_text("[]", encoding="utf-8")
-            yield {"success": True, "stdout": "Todo list effacée."}
+            if force:
+                todos = []
+            else:
+                todos = [t for t in todos if t.get("status") not in ("completed", "cancelled")]
+            store.write_text(json.dumps(todos, indent=2), encoding="utf-8")
+            yield {"success": True, "stdout": "Todo list mise à jour."}
             return
         if action == "add":
             import uuid
