@@ -1,4 +1,5 @@
 import * as React from "react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatHeader } from "@/components/ChatHeader";
 import { MessageList } from "@/components/MessageList";
@@ -8,11 +9,14 @@ import { SettingsDialog } from "@/components/SettingsDialog";
 import { AuthDialog } from "@/components/AuthDialog";
 import { SessionModeDialog } from "@/components/SessionModeDialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/store/useAppStore";
 import { cn } from "@/lib/utils";
 
 export default function App() {
   const bootstrap = useAppStore((s) => s.bootstrap);
+  const retryBootstrap = useAppStore((s) => s.retryBootstrap);
+  const backendOffline = useAppStore((s) => s.backendOffline);
   const messages = useAppStore((s) => s.messages);
   const sessionId = useAppStore((s) => s.sessionId);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -67,6 +71,23 @@ export default function App() {
             onOpenMode={() => setModeOpen(true)}
             onOpenNav={() => setMobileNavOpen(true)}
           />
+          {backendOffline && (
+            <div className="flex items-center gap-3 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive sm:px-4">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span className="min-w-0 flex-1">
+                Backend injoignable. Lancez le backend Web puis réessayez.
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 border-destructive/40 text-destructive hover:bg-destructive/10"
+                onClick={() => void retryBootstrap()}
+              >
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                Réessayer
+              </Button>
+            </div>
+          )}
           <div className="min-h-0 flex-1">
             <MessageList onSuggestion={(prompt) => setDraft(prompt)} />
           </div>

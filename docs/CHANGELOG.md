@@ -38,6 +38,13 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
 - Polling d'interruption resserré (500 ms → 20 ms).
 - Suppression d'un envoi de prompt système devenu inutile côté bot Telegram.
 - Containers/dialogues adaptés aux petits écrans.
+- **Lancement Web robuste** (`web/start.sh`) : détection automatique du virtualenv (`./venv`, `.venv`),
+  installation automatique des dépendances backend manquantes (`uvicorn`/`fastapi`), attente de
+  `/api/health` avant de démarrer Vite, messages d'erreur explicites.
+- **Plus de conversation fictive par défaut** : le mock n'est chargé qu'avec `?demo=1`. Si le backend
+  est injoignable, l'UI affiche un bandeau « Backend injoignable » avec un bouton **Réessayer** au lieu
+  de masquer l'erreur (corrige l'atterrissage sur une fausse session).
+- Installation Web dans `install.sh` : les dépendances backend sont désormais installées dans le venv.
 
 ### Fichiers clés
 

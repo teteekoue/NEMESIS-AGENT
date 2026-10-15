@@ -54,6 +54,8 @@ export interface ProviderInfo {
 
 interface AppState {
   connected: boolean;
+  backendOffline: boolean;
+  demo: boolean;
   agentReachable: boolean | null;
   provider: ProviderInfo | null;
   messages: ChatMessage[];
@@ -81,6 +83,7 @@ interface AppState {
   theme: "dark" | "light";
 
   bootstrap: () => Promise<void>;
+  retryBootstrap: () => Promise<void>;
   connectSocket: () => void;
   reconnectAgent: () => void;
   sendMessage: (text: string) => Promise<void>;
@@ -143,6 +146,8 @@ function logLine(stamp: string, text: string): string {
 
 export const useAppStore = create<AppState>((set, get) => ({
   connected: false,
+  backendOffline: false,
+  demo: false,
   agentReachable: null,
   provider: null,
   messages: [],
@@ -177,14 +182,16 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     if (params.get("demo") === "1") {
       // Offline demo mode: render a fictional, fully-populated session.
-      set({ messages: buildDemoSession(), connected: true });
+      // No socket is opened so the simulated conversation stays static.
+      manualClose = true;
+      set({ messages: buildDemoSession(), connected: true, backendOffline: false, demo: true });
       const config = await api.getConfig().catch(() => null);
       if (config) set({ config });
-      get().connectSocket();
       await Promise.all([get().refreshTools(), get().refreshFiles()]);
       void get().refreshModels();
       return;
     }
+    manualClose = false;
 
     get().connectSocket();
     const [config] = await Promise.all([
@@ -210,13 +217,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       reachable = false;
     }
 
-    if (!reachable && get().messages.length === 0) {
-      // No backend reachable: fall back to the demo session so the UI can be
-      // reviewed (e.g. static preview without the API proxy).
-      set({ messages: buildDemoSession(), connected: true });
-    }
+    // The mock session is only shown when explicitly requested with ?demo=1.
+    // Without a reachable backend we surface a clear offline state instead of
+    // silently rendering fictional content.
+    set({ backendOffline: !reachable });
 
     void get().refreshModels();
+  },
+
+  retryBootstrap: async () => {
+    set({ backendOffline: false });
+    await get().bootstrap();
   },
 
   connectSocket: () => {
@@ -237,7 +248,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const ws = new WebSocket(url);
     socket = ws;
 
-    ws.onopen = () => set({ connected: true });
+    ws.onopen = () => set({ connected: true, backendOffline: false });
 
     ws.onclose = () => {
       set({ connected: false, busy: false, pendingAuth: null });

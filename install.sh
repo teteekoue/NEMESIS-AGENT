@@ -16,6 +16,11 @@ python3 -m venv venv
 ./venv/bin/pip install --upgrade pip
 ./venv/bin/pip install -r requirements.txt
 
+# Install the Web backend deps in the venv too, so ./web/start.sh (which
+# prefers ./venv/bin/python3) never fails with "No module named 'uvicorn'".
+echo "Installation des dépendances backend Web (venv)..."
+./venv/bin/pip install -r web/requirements.txt
+
 # --- Interface Web (optionnelle) ---
 INSTALL_WEB="${NEMESIS_INSTALL_WEB:-ask}"
 if [ "$INSTALL_WEB" = "ask" ]; then
@@ -28,14 +33,11 @@ fi
 
 if [ "$INSTALL_WEB" = "yes" ]; then
     echo ""
-    echo "Installation des dépendances backend Web..."
-    ./venv/bin/pip install -r web/requirements.txt
-
     if command -v node &>/dev/null && command -v npm &>/dev/null; then
         echo "Installation des dépendances frontend (npm)..."
         (cd web/frontend && npm install --no-audit --no-fund)
     else
-        echo "AVERTISSEMENT: Node.js/npm introuvable — le frontend Web ne pourra pas être construit."
+        echo "AVERTISSEMENT: Node.js/npm introuvable — le frontend Web ne pourra pas être lancé."
         echo "             Installez Node.js 18+ puis: cd web/frontend && npm install"
     fi
 fi

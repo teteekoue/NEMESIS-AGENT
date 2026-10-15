@@ -74,11 +74,16 @@ npm install
 ```
 
 Le script :
+- choisit l'interpréteur Python (priorité à `./venv/bin/python3`, puis `.venv`, puis le `python3` système ; surchargeable par `NEMESIS_PYTHON`) ;
+- vérifie les dépendances backend (`uvicorn`, `fastapi`) et les installe automatiquement si elles manquent ;
 - démarre le backend FastAPI sur le port `8000` (surchargeable par `NEMESIS_WEB_PORT`) ;
+- attend que `/api/health` réponde avant de continuer ;
 - installe les dépendances npm au premier lancement ;
 - démarre Vite sur le port `5173` (surchargeable par `NEMESIS_FRONTEND_PORT`), avec proxy `/api` et `/ws` vers le backend.
 
 Accès : `http://localhost:5173`.
+
+Prérequis système : `python3`, `npm` (Node.js 18+) et `curl`.
 
 ### Lancement manuel
 
@@ -299,8 +304,12 @@ La boîte de dialogue **Réglages** comporte 8 onglets :
 
 | Problème | Solution |
 | -------- | -------- |
+| `ModuleNotFoundError: uvicorn` a l'exécution de `./web/start.sh` | Le script installe les dépendances automatiquement. Sinon : `pip install -r web/requirements.txt` (ou `./venv/bin/pip install -r web/requirements.txt`). |
+| `ECONNREFUSED` / `proxy error` en boucle sur `/api/...` | Le backend n'écoute pas (dépendances manquantes ou port occupé). Lancez `./web/start.sh` : il garantit que le backend répond avant de démarrer Vite. |
+| Bandeau « Backend injoignable » | Le backend Web n'est pas lancé, ou pas sur le port attendu. Cliquez sur **Réessayer**, ou démarrez `python -m web.backend`. |
 | `ModuleNotFoundError: fastapi` | `pip install -r web/requirements.txt` |
 | Le frontend n'atteint pas l'API | Vérifier le proxy Vite et que le backend écoute sur `8000` |
 | Page blanche après build | Refaire `npm run build` puis relancer `python -m web.backend` |
 | Terminal non fonctionnel | Vérifier que le shell (`$SHELL`, sinon `/bin/bash`) existe côté backend |
 | Icônes/logo manquants | Vérifier la présence de `web/frontend/public/logo.jpg` (recopié dans `dist/`) |
+| Connexion NEMAPI impossible en mode local | Vérifier que `url` n'est pas défini (mode « URL publique ») : repasser en « Adresse IP et port », saisir l'hôte + port puis **Tester**. |

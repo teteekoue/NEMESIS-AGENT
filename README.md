@@ -750,6 +750,8 @@ python -m web.backend            # API sur le port 8000
 cd web/frontend && npm install && npm run dev   # UI sur le port 5173
 ```
 
+`./web/start.sh` détecte automatiquement l'environnement virtuel (`./venv`), installe les dépendances backend manquantes (`uvicorn`/`fastapi`), attend que l'API réponde puis lance Vite. Prérequis : `python3`, `npm` (Node.js 18+) et `curl`.
+
 ### Fonctionnalités
 
 - **Chat en streaming** (WebSocket `/ws/chat`) avec indicateurs de temps en temps réel
@@ -763,7 +765,7 @@ cd web/frontend && npm install && npm run dev   # UI sur le port 5173
 
 ### Aperçu fictif (démo)
 
-Pour prévisualiser l'UI sans serveur NEMAPI, ouvrez l'URL avec `?demo=1` :
+L'interface ne charge **jamais** de conversation fictive par défaut : si le backend est injoignable, un bandeau « Backend injoignable » avec un bouton **Réessayer** s'affiche. Pour prévisualiser l'UI sans backend (par exemple une prévisualisation statique), ouvrez explicitement l'URL avec `?demo=1` :
 
 ```bash
 http://localhost:5173/?demo=1
