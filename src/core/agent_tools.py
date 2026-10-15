@@ -20,6 +20,18 @@ from .tools.glob_files import glob_files, DESCRIPTION_FULL as GLOB_DESC
 from .tools.git_info import git_info, DESCRIPTION_FULL as GIT_DESC
 from .tools.todo import todo, DESCRIPTION_FULL as TODO_DESC
 from .tools.apply_patch import apply_patch, DESCRIPTION_FULL as PATCH_DESC
+from .memory_store import (
+    add_block,
+    clear_all as memory_clear_all,
+    delete_block,
+    build_memory_message,
+    load_blocks,
+    load_prefs,
+    search_blocks,
+    upsert_block,
+    get_block,
+    set_enabled as memory_set_enabled,
+)
 
 
 def create_registry(workspace_dir: str) -> ToolRegistry:
@@ -543,6 +555,114 @@ def create_registry(workspace_dir: str) -> ToolRegistry:
         params_schema={"type": "object", "properties": {}},
     )
 
+    registry.register(
+        name="memory_add",
+        kind=ToolKind.OTHER,
+        handler=lambda title, content, tags=None: _memory_add(title, content, tags),
+        description=(
+            "Add a new memory mini-block about the user (preferences, identity, "
+            "environment, recurring instructions). Use for stable facts useful in "
+            "future sessions. Returns the stored block with its id."
+        ),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short label for the fact."},
+                "content": {"type": "string", "description": "The fact to remember, self-contained."},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional tags to group related memories.",
+                },
+            },
+            "required": ["title", "content"],
+        },
+        risk="medium",
+    )
+
+    registry.register(
+        name="memory_update",
+        kind=ToolKind.OTHER,
+        handler=lambda key, title, content, tags=None: _memory_upsert(key, title, content, tags),
+        description=(
+            "Create or update a memory block identified by a stable 'key'. Use the "
+            "same key to update a fact you already stored instead of duplicating it."
+        ),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "Stable identifier of the fact."},
+                "title": {"type": "string", "description": "Short label."},
+                "content": {"type": "string", "description": "The fact to remember."},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional tags.",
+                },
+            },
+            "required": ["key", "title", "content"],
+        },
+        risk="medium",
+    )
+
+    registry.register(
+        name="memory_search",
+        kind=ToolKind.MEMORY_SEARCH,
+        handler=lambda query="", tags=None, limit=10: _memory_search(query, tags, limit),
+        description=(
+            "Search the persistent memory for blocks matching a query or tags. "
+            "Returns matching blocks with their ids."
+        ),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Free-text query. Empty lists recent blocks."},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional tags to filter.",
+                },
+                "limit": {"type": "integer", "description": "Maximum blocks to return (default 10)."},
+            },
+        },
+    )
+
+    registry.register(
+        name="memory_get",
+        kind=ToolKind.MEMORY_GET,
+        handler=lambda block_id="": _memory_get(block_id),
+        description="Read a single memory block by id, or list all blocks when id is empty.",
+        params_schema={
+            "type": "object",
+            "properties": {
+                "block_id": {"type": "string", "description": "Memory block id (optional)."},
+            },
+        },
+    )
+
+    registry.register(
+        name="memory_delete",
+        kind=ToolKind.DELETE,
+        handler=lambda block_id: _memory_delete(block_id),
+        description="Delete a single memory block by its id.",
+        params_schema={
+            "type": "object",
+            "properties": {
+                "block_id": {"type": "string", "description": "Memory block id to delete."},
+            },
+            "required": ["block_id"],
+        },
+        risk="high",
+    )
+
+    registry.register(
+        name="memory_clear",
+        kind=ToolKind.DELETE,
+        handler=lambda: _memory_clear(),
+        description="Delete ALL memory blocks. Irreversible; ask before using.",
+        params_schema={"type": "object", "properties": {}},
+        risk="high",
+    )
 
     return registry.finalize()
 
@@ -566,7 +686,23 @@ def build_system_prompt(registry: ToolRegistry) -> str:
         )
 
     tool_count = len(tools_lines)
-    prompt += f"\n\n## Available Tools ({tool_count} total)\n\n" + "\n".join(tools_lines)
+    catalog = "\n".join(tools_lines) or "- (no tools registered)"
+    catalog_block = (
+        f"{tool_count} tools are registered. Exact parameter names are listed in\n"
+        "parentheses; a trailing `?` means the parameter is optional.\n\n"
+        + catalog
+    )
+    if "{{TOOLS_CATALOG}}" in prompt:
+        prompt = prompt.replace("{{TOOLS_CATALOG}}", catalog_block)
+    else:
+        prompt += "\n\n## Available Tools\n\n" + catalog_block
+
+    try:
+        memory_message = build_memory_message()
+    except Exception:
+        memory_message = ""
+    if memory_message:
+        prompt += "\n\n" + memory_message
 
     return prompt
 
@@ -795,11 +931,7 @@ def _mcp_tools_list(server: str) -> dict:
     except Exception as e:
         return {"success": False, "stdout": f"Erreur liste outils MCP: {e}"}
     finally:
-        if client is not None:
-            try:
-                client.close()
-            except Exception:
-                pass
+        _mcp_manager().release_client(client)
 
 
 def _mcp_call(server: str, tool: str, arguments=None) -> dict:
@@ -853,11 +985,7 @@ def _mcp_call(server: str, tool: str, arguments=None) -> dict:
     except Exception as e:
         return {"success": False, "stdout": f"Erreur MCP: {e}"}
     finally:
-        if client is not None:
-            try:
-                client.close()
-            except Exception:
-                pass
+        _mcp_manager().release_client(client)
 
 
 def _list_agents() -> dict:
@@ -1101,3 +1229,83 @@ def _skills_list() -> dict:
         return {"success": True, "stdout": "\n".join(lines)}
     except Exception as e:
         return {"success": False, "stdout": f"skills_list error: {e}"}
+
+
+def _memory_add(title: str, content: str, tags=None) -> dict:
+    try:
+        block = add_block(title, content, tags)
+        return {
+            "success": True,
+            "stdout": f"Memoire ajoutee [{block['id']}]: {block.get('title', '')}",
+            "block": block,
+        }
+    except Exception as e:
+        return {"success": False, "stdout": f"memory_add error: {e}"}
+
+
+def _memory_upsert(key: str, title: str, content: str, tags=None) -> dict:
+    try:
+        block = upsert_block(key, title, content, tags)
+        return {
+            "success": True,
+            "stdout": f"Memoire mise a jour [{block['id']}] ({key}): {block.get('title', '')}",
+            "block": block,
+        }
+    except Exception as e:
+        return {"success": False, "stdout": f"memory_update error: {e}"}
+
+
+def _memory_search(query: str = "", tags=None, limit: int = 10) -> dict:
+    try:
+        if not query and not tags:
+            blocks = sorted(load_blocks(), key=lambda b: float(b.get("updated_at", 0.0) or 0.0), reverse=True)
+            blocks = blocks[: max(1, int(limit) if limit else 10)]
+        else:
+            blocks = search_blocks(query, tags, limit)
+        if not blocks:
+            return {"success": True, "stdout": "Aucun bloc de memoire ne correspond.", "blocks": []}
+        lines = [f"BLOCS MEMOIRE ({len(blocks)})", "-" * 48]
+        for b in blocks:
+            lines.append(f"[{b.get('id')}] {b.get('title') or b.get('key')}")
+            lines.append(f"    {str(b.get('content', ''))[:400]}")
+            if b.get("tags"):
+                lines.append(f"    tags: {', '.join(b.get('tags') or [])}")
+        return {"success": True, "stdout": "\n".join(lines), "blocks": blocks}
+    except Exception as e:
+        return {"success": False, "stdout": f"memory_search error: {e}"}
+
+
+def _memory_get(block_id: str = "") -> dict:
+    try:
+        if not block_id:
+            blocks = sorted(load_blocks(), key=lambda b: float(b.get("updated_at", 0.0) or 0.0), reverse=True)
+            if not blocks:
+                return {"success": True, "stdout": "Memoire vide.", "blocks": []}
+            lines = [f"MEMOIRE ({len(blocks)} blocs)", "-" * 48]
+            for b in blocks:
+                lines.append(f"[{b.get('id')}] {b.get('title') or b.get('key')}: {str(b.get('content', ''))[:400]}")
+            return {"success": True, "stdout": "\n".join(lines), "blocks": blocks}
+        block = get_block(block_id)
+        if block is None:
+            return {"success": False, "stdout": f"Bloc introuvable: {block_id}"}
+        return {"success": True, "stdout": str(block.get("content", "")), "block": block}
+    except Exception as e:
+        return {"success": False, "stdout": f"memory_get error: {e}"}
+
+
+def _memory_delete(block_id: str) -> dict:
+    try:
+        ok = delete_block(block_id)
+        if not ok:
+            return {"success": False, "stdout": f"Bloc introuvable: {block_id}"}
+        return {"success": True, "stdout": f"Bloc supprime: {block_id}"}
+    except Exception as e:
+        return {"success": False, "stdout": f"memory_delete error: {e}"}
+
+
+def _memory_clear() -> dict:
+    try:
+        memory_clear_all()
+        return {"success": True, "stdout": "Memoire videe (tous les blocs supprimes)."}
+    except Exception as e:
+        return {"success": False, "stdout": f"memory_clear error: {e}"}

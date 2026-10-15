@@ -15,3 +15,15 @@ venv/
 dist/
 build/
 *.egg-info/
+
+# Secrets locaux (n'existent qu'en config utilisateur ~/.config/nemesis-cli/, jamais commités)
+github.yaml
+telegram_bot.yaml
+.env.local
+
+# Web UI
+node_modules/
+web/frontend/node_modules/
+web/frontend/dist/
+web/backend/__pycache__/
+web/**/__pycache__/

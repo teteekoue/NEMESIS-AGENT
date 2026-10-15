@@ -3,10 +3,71 @@
 from __future__ import annotations
 
 import shlex
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
+
+
+class _ClientPool:
+    """Keep spawned MCP servers alive briefly so repeated calls reuse them.
+
+    Spawning an ``npx``/``uvx`` server costs 1-3 seconds. For interactive
+    sessions we keep the process warm for a short idle window instead of
+    paying that cost on every :meth:`MCPManager.get_client` call.
+    """
+
+    IDLE_TTL = 120.0
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: Dict[str, Tuple[Any, float, Dict[str, Any]]] = {}
+
+    def acquire(self, name: str, signature: Dict[str, Any], factory):
+        now = time.time()
+        with self._lock:
+            entry = self._entries.get(name)
+            if entry is not None:
+                client, ts, sig = entry
+                alive = getattr(client, "running", False) and getattr(
+                    getattr(client, "process", None), "poll", lambda: 1
+                )() is None
+                if sig == signature and alive and (now - ts) < self.IDLE_TTL:
+                    return client
+                self._drop(name)
+        client = factory()
+        with self._lock:
+            self._entries[name] = (client, now, signature)
+        return client
+
+    def touch(self, name: str) -> None:
+        with self._lock:
+            entry = self._entries.get(name)
+            if entry is not None:
+                self._entries[name] = (entry[0], time.time(), entry[2])
+
+    def _drop(self, name: str) -> None:
+        entry = self._entries.pop(name, None)
+        if entry is not None:
+            try:
+                entry[0].close()
+            except Exception:
+                pass
+
+    def invalidate(self, name: Optional[str] = None) -> None:
+        with self._lock:
+            if name is None:
+                names = list(self._entries.keys())
+            else:
+                names = [name]
+        for n in names:
+            with self._lock:
+                self._drop(n)
+
+
+_POOL = _ClientPool()
 
 
 class MCPManager:
@@ -67,6 +128,7 @@ class MCPManager:
             self._save_config()
         except Exception as e:
             return False, f"Failed to save config: {e}"
+        _POOL.invalidate(name)
         return True, f"Serveur MCP '{name}' ajoute."
 
     def remove_server(self, name: str) -> Tuple[bool, str]:
@@ -76,6 +138,7 @@ class MCPManager:
                 self._save_config()
             except Exception as e:
                 return False, f"Failed to save config: {e}"
+            _POOL.invalidate(name)
             return True, f"Serveur MCP '{name}' supprime."
         return False, f"Serveur '{name}' non trouve."
 
@@ -108,7 +171,13 @@ class MCPManager:
         return parts[0], parts[1:]
 
     def get_client(self, name: str, timeout: float = 30.0):
-        """Spawn a new SimpleMCPClient for the named server (caller must close())."""
+        """Return a live client for the named server.
+
+        Servers are pooled and kept warm for a short idle window, so callers
+        get a ready process without re-paying the spawn cost. The caller should
+        NOT close pooled clients; use :meth:`release_client` instead (a no-op
+        that just refreshes the idle timer).
+        """
         self.reload()
         if name not in self.servers:
             return None
@@ -122,13 +191,44 @@ class MCPManager:
         if env and not isinstance(env, dict):
             env = {}
         cwd = server_cfg.get("cwd")
-        return SimpleMCPClient(
-            command,
-            args,
-            env={str(k): str(v) for k, v in env.items()},
-            timeout=timeout,
-            cwd=str(cwd) if cwd else None,
-        )
+        signature = {
+            "command": command,
+            "args": list(args),
+            "env": {str(k): str(v) for k, v in env.items()},
+            "cwd": str(cwd) if cwd else None,
+        }
+
+        def factory():
+            return SimpleMCPClient(
+                command,
+                args,
+                env={str(k): str(v) for k, v in env.items()},
+                timeout=timeout,
+                cwd=str(cwd) if cwd else None,
+            )
+
+        client = _POOL.acquire(name, signature, factory)
+        try:
+            client.initialize()
+        except Exception:
+            # A stale process may be half-dead: rebuild once.
+            _POOL.invalidate(name)
+            client = _POOL.acquire(name, signature, factory)
+            client.initialize()
+        _POOL.touch(name)
+        return client
+
+    @staticmethod
+    def release_client(client: Any) -> None:
+        """Mark a pooled client as still in use (keeps it warm)."""
+        if client is None:
+            return
+        # Pooled clients are reused; only refresh the idle timer.
+        _POOL.touch(getattr(client, "_nemesis_pool_name", "") or "")
+
+    @staticmethod
+    def close_all() -> None:
+        _POOL.invalidate()
 
     def test_server(self, name: str, timeout: float = 15.0) -> Tuple[bool, str]:
         """Start server, initialize, list tools, close. Returns (ok, message)."""
@@ -146,7 +246,5 @@ class MCPManager:
         except Exception as e:
             return False, str(e)
         finally:
-            try:
-                client.close()
-            except Exception:
-                pass
+            # Pooled client: keep it warm for subsequent calls.
+            MCPManager.release_client(client)

@@ -296,21 +296,21 @@ class NemesisApp:
 
         # Tester la connexion au premier message si pas encore fait
         if self._conn_ok is None:
-            self._conn_ok = self.client.test_connection()
+            try:
+                self._conn_ok = self.client.test_connection(max_age=20.0)
+            except TypeError:
+                self._conn_ok = self.client.test_connection()
 
         if self._conn_ok is False:
             self.console.print("[error]NEMAPI n'est pas connecte. Utilisez /config pour le configurer.[/error]")
             return
 
-        # Envoi du prompt systeme au premier message (une seule fois par session)
+        # Le prompt systeme (outils + memoire) est fusionne avec le premier
+        # message utilisateur pour ne faire qu'un seul aller-retour provider.
+        system_prefix = ""
         if self._send_system_prompt and not self._prompt_sent:
-            prompt = self.executor.get_system_prompt() if hasattr(self.executor, "get_system_prompt") else ""
-            if prompt:
-                try:
-                    init_result = self.client.send_message(prompt, role="system")
-                except TypeError:
-                    init_result = self.client.send_message(prompt)
-                self._prompt_sent = bool(init_result.get("success", True)) if isinstance(init_result, dict) else True
+            system_prefix = self.executor.get_system_prompt() if hasattr(self.executor, "get_system_prompt") else ""
+            self._prompt_sent = True
 
         increment_message_count()
 
@@ -343,9 +343,18 @@ class NemesisApp:
             next(anim)  # start spinner
             try:
                 try:
-                    result = self.client.send_message(current_input, role=current_role)
+                    result = self.client.send_message(
+                        current_input, role=current_role, system_prefix=system_prefix
+                    )
                 except TypeError:
-                    result = self.client.send_message(current_input)
+                    if system_prefix and current_role == "user":
+                        result = self.client.send_message(
+                            f"[SYSTEM INSTRUCTIONS]\n{system_prefix}\n\n[USER MESSAGE]\n{current_input}",
+                            role=current_role,
+                        )
+                    else:
+                        result = self.client.send_message(current_input)
+                system_prefix = ""
             finally:
                 try:
                     anim.close()

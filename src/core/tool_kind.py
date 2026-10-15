@@ -13,6 +13,7 @@ class ToolNamespace(str, Enum):
 
 
 class ToolKind(str, Enum):
+
     READ = "read"
     EDIT = "edit"
     DELETE = "delete"

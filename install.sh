@@ -16,8 +16,35 @@ python3 -m venv venv
 ./venv/bin/pip install --upgrade pip
 ./venv/bin/pip install -r requirements.txt
 
+# --- Interface Web (optionnelle) ---
+INSTALL_WEB="${NEMESIS_INSTALL_WEB:-ask}"
+if [ "$INSTALL_WEB" = "ask" ]; then
+    read -r -p "Installer l'interface Web (FastAPI + React) ? [o/N] " REPLY
+    case "$REPLY" in
+        [oOyY]*) INSTALL_WEB="yes" ;;
+        *) INSTALL_WEB="no" ;;
+    esac
+fi
+
+if [ "$INSTALL_WEB" = "yes" ]; then
+    echo ""
+    echo "Installation des dépendances backend Web..."
+    ./venv/bin/pip install -r web/requirements.txt
+
+    if command -v node &>/dev/null && command -v npm &>/dev/null; then
+        echo "Installation des dépendances frontend (npm)..."
+        (cd web/frontend && npm install --no-audit --no-fund)
+    else
+        echo "AVERTISSEMENT: Node.js/npm introuvable — le frontend Web ne pourra pas être construit."
+        echo "             Installez Node.js 18+ puis: cd web/frontend && npm install"
+    fi
+fi
+
 echo ""
 echo "=== Installation terminée ==="
-echo "Lancer:  ./venv/bin/python3 agent.py"
-echo "Config:  ~/.config/nemesis-cli/  (créée au premier lancement)"
-echo "Workspace par défaut: ~/nemesis-workspace"
+echo "Lancer (CLI):    ./venv/bin/python3 agent.py"
+echo "Lancer (Web):    ./web/start.sh        (dev, backend + frontend)"
+echo "Config:          ~/.config/nemesis-cli/  (créée au premier lancement)"
+echo "Workspace défaut: ~/nemesis-workspace"
+echo ""
+echo "Intégration GitHub: onglet GitHub des réglages Web (nécessite Node.js/npx)."

@@ -963,10 +963,13 @@ class NemesisTelegramBot:
             await context.bot.send_message(chat_id=chat_id, text="[ERROR] Provider non disponible")
             return
         
-        # Envoyer le prompt système si nécessaire
+        # Build the system prompt and merge it into the first user message so a
+        # fresh chat costs a single provider round-trip instead of two.
+        system_prefix = ""
         if not self.prompt_system_sent.get(chat_id, False):
-            await self._send_system_prompt(chat_id)
-        
+            system_prefix = self._build_system_prompt_text(chat_id)
+            self.prompt_system_sent[chat_id] = True
+
         # Afficher un message de statut
         status_msg = None
         try:
@@ -990,9 +993,18 @@ class NemesisTelegramBot:
                 
                 # Envoyer à l'IA
                 try:
-                    result = provider.send_message(current_input, role=current_role)
+                    result = provider.send_message(
+                        current_input, role=current_role, system_prefix=system_prefix
+                    )
                 except TypeError:
-                    result = provider.send_message(current_input)
+                    if system_prefix and current_role == "user":
+                        result = provider.send_message(
+                            f"[SYSTEM INSTRUCTIONS]\n{system_prefix}\n\n[USER MESSAGE]\n{current_input}",
+                            role=current_role,
+                        )
+                    else:
+                        result = provider.send_message(current_input)
+                system_prefix = ""
                 
                 if not result or not isinstance(result, dict):
                     await self._cleanup_thinking_message(context, chat_id, status_msg)
@@ -1083,40 +1095,21 @@ class NemesisTelegramBot:
             except Exception:
                 pass
 
-    async def _send_system_prompt(self, chat_id: int) -> bool:
-        """Envoye le prompt système à l'IA (pas à l'utilisateur!) pour ce chat."""
-        # Generate the prompt from the live registry so Telegram and CLI
-        # expose exactly the same tools and rules.
+    def _build_system_prompt_text(self, chat_id: int) -> str:
+        """Construit le prompt système depuis le registre d'outils vivant.
+
+        Le prompt (catalogue d'outils + mémoire) est fusionné avec le premier
+        message utilisateur du tour afin de ne consommer qu'un seul aller-retour
+        provider au démarrage d'une conversation.
+        """
+        if not self.registry:
+            self._init_nemesis()
         try:
             from src.core.agent_tools import build_system_prompt
-            prompt = build_system_prompt(self.registry)
+            return build_system_prompt(self.registry) or ""
         except Exception as e:
             logger.error(f"Erreur construction prompt système: {e}")
-            prompt = "You are NEMESIS. Use only the tools provided by the runtime."
-        
-        try:
-            provider = self._get_provider(chat_id)
-            if not provider:
-                logger.error("Provider non disponible pour envoyer le prompt système")
-                return False
-            
-            # Envoyer le prompt à l'IA via le provider, pas à l'utilisateur!
-            # Certains providers (nemapi_bridge) supportent role=, d'autres non
-            try:
-                result = provider.send_message(prompt, role="system")
-            except TypeError:
-                # Provider ne supporte pas role=, envoyer sans
-                result = provider.send_message(prompt)
-            
-            if result and result.get("success"):
-                self.prompt_system_sent[chat_id] = True
-                return True
-            else:
-                logger.error(f"Echec envoi prompt système: {result}")
-                return False
-        except Exception as e:
-            logger.error(f"Erreur envoi prompt système: {e}")
-            return False
+            return "You are NEMESIS. Use only the tools provided by the runtime."
 
     def _format_ai_response(self, outputs: List[str], provider_type: str, model: str) -> str:
         """Formate la réponse de l'IA comme dans le CLI NEMESIS."""
@@ -1467,13 +1460,36 @@ class NemesisTelegramBot:
 # =============================================================================
 
 def load_bot_config(config_path: str = "telegram_config.yaml") -> Dict[str, Any]:
-    """Charge la configuration du bot depuis un fichier YAML."""
+    """Charge la configuration du bot depuis un fichier YAML.
+
+    La configuration enregistree depuis l'UI web (sous le repertoire de config
+    utilisateur partage) est fusionnee par dessus le fichier du projet, afin que
+    le token du bot et les reglages soient communs aux deux interfaces.
+    """
     import yaml
     config_path = Path(config_path)
-    if not config_path.exists():
-        return {}
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f) or {}
+    merged: Dict[str, Any] = {}
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            loaded = yaml.safe_load(f)
+            if isinstance(loaded, dict):
+                merged.update(loaded)
+    try:
+        from src.core.paths import USER_CONFIG_DIR
+        user_overlay = Path(USER_CONFIG_DIR) / "telegram_bot.yaml"
+        if user_overlay.exists():
+            with open(user_overlay, 'r') as f:
+                loaded = yaml.safe_load(f)
+                if isinstance(loaded, dict):
+                    nemapi = merged.get("nemapi") if isinstance(merged.get("nemapi"), dict) else {}
+                    if isinstance(loaded.get("nemapi"), dict):
+                        nemapi.update(loaded["nemapi"])
+                    merged.update(loaded)
+                    if nemapi:
+                        merged["nemapi"] = nemapi
+    except Exception:
+        pass
+    return merged
 
 
 def main():

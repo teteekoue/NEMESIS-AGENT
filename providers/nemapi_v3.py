@@ -8,7 +8,7 @@ serveur. Les modèles sont récupérés dynamiquement via ``GET /v1/models``.
 import json
 import time
 from urllib.parse import urlparse
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from providers.base import BaseProvider
 
@@ -31,6 +31,14 @@ class NemapiV3Provider(BaseProvider):
         import requests as req
 
         self.req = req
+        # Persistent HTTP session enables keep-alive / connection pooling,
+        # removing a TCP+TLS handshake on every turn.
+        try:
+            self._session = req.Session()
+        except Exception:
+            self._session = None
+        self._conn_cached: Optional[bool] = None
+        self._conn_checked_at = 0.0
         nv3_cfg = config.get("nemapi", config.get("nemapi_v3", {}))
         configured_url = (
             nv3_cfg.get("url")
@@ -50,7 +58,18 @@ class NemapiV3Provider(BaseProvider):
             or (parsed_url.port if parsed_url else None)
             or self.DEFAULT_PORT
         )
-        self.base_url = f"http://{self.host}:{self.port}"
+        # A public URL (e.g. https://xxx.trycloudflare.com/v1, or with a custom
+        # prefix such as https://host/nemapi/v1) may carry a scheme, host, port
+        # and a path prefix. We keep the prefix but drop a trailing /v1 since
+        # every endpoint below already appends /v1/... explicitly.
+        if parsed_url and parsed_url.netloc:
+            prefix = (parsed_url.path or "").rstrip("/")
+            if prefix.endswith("/v1"):
+                prefix = prefix[: -len("/v1")]
+            self.base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{prefix}"
+        else:
+            self.base_url = f"http://{self.host}:{self.port}"
+        self.url = self.base_url
         
         # Le modèle configuré sera validé contre /v1/models lorsqu'il est interrogé.
         self.model = (
@@ -61,57 +80,115 @@ class NemapiV3Provider(BaseProvider):
         
         self._models_cache: List[Dict[str, Any]] = []
         
-        self.timeout = int(self.provider_config.get("timeout", 180))
+        configurable_timeout = (
+            nv3_cfg.get("timeout")
+            or self.provider_config.get("timeout")
+            or 180
+        )
+        self.timeout = int(configurable_timeout)
         self.max_retries = 3
-        self.retry_delay = 3
+        self.retry_delay = 1
         self._conversation: List[Dict[str, str]] = []
         self._session_started = False
 
-    def test_connection(self) -> bool:
-        """Teste /status puis fallback sur la racine."""
-        try:
-            resp = self.req.get(f"{self.base_url}/status", timeout=5)
-            if resp.status_code == 200:
-                return True
-        except Exception:
-            pass
-        try:
-            self.req.head(f"{self.base_url}/", timeout=5)
-            return True
-        except Exception:
-            return False
+    def test_connection(self, max_age: float = 20.0) -> bool:
+        """Teste /status puis /v1/models puis la racine.
+
+        Le resultat est mis en cache ``max_age`` secondes pour eviter un
+        aller-retour reseau a chaque message. Le premier probe repond souvent
+        instantanement ; on tente les suivants seulement en cas d'echec.
+        """
+        now = time.time()
+        if self._conn_cached is not None and (now - self._conn_checked_at) < max_age:
+            return self._conn_cached
+        getter = self._session.get if self._session is not None else self.req.get
+        ok = False
+        for probe in (
+            f"{self.base_url}/status",
+            f"{self.base_url}/v1/models",
+            self.base_url + "/",
+        ):
+            try:
+                resp = getter(probe, timeout=3)
+                if resp.status_code < 500:
+                    ok = True
+                    break
+            except Exception:
+                continue
+        self._conn_cached = ok
+        self._conn_checked_at = now
+        return ok
 
     def list_models(self) -> List[Dict[str, Any]]:
-        """Liste les modèles exposés par le serveur NEMAPI."""
-        try:
-            resp = self.req.get(f"{self.base_url}/v1/models", timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            raw_models = data.get("data", data) if isinstance(data, dict) else data
-            models = []
-            for item in raw_models or []:
-                if isinstance(item, str):
-                    models.append({"id": item, "owned_by": "nemapi"})
-                elif isinstance(item, dict) and item.get("id"):
-                    models.append({
-                        "id": str(item["id"]),
-                        "owned_by": item.get("owned_by", "nemapi"),
-                        "display_name": item.get("display_name", str(item["id"]).replace("-", " ").title()),
-                    })
-            self._models_cache = models
-            if models and self.model not in {m["id"] for m in models}:
-                self.model = models[0]["id"]
-            return models
-        except Exception:
-            return list(self._models_cache)
+        """Liste les modèles exposés par le serveur NEMAPI.
 
-    def send_message(self, message: str, role: str = "user") -> Dict[str, Any]:
+        Tolère plusieurs formes de réponse : ``{"data": [...]}``, une liste
+        brute, une liste de chaînes, ou un dict ``{id: {...}}``. Erreurs réseau
+        remontées explicitement pour que l'UI puisse distinguer « hors ligne »
+        d'une simple réponse vide.
+        """
+        getter = self._session.get if self._session is not None else self.req.get
+        resp = getter(f"{self.base_url}/v1/models", timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        raw_models = data.get("data", data) if isinstance(data, dict) else data
+
+        items: List[Any]
+        if isinstance(raw_models, dict):
+            # {id: {...}} or {models: [...]} shapes
+            if isinstance(raw_models.get("models"), list):
+                items = raw_models["models"]
+            else:
+                items = []
+                for key, value in raw_models.items():
+                    if isinstance(value, dict):
+                        value = {"id": key, **value}
+                    else:
+                        value = {"id": key}
+                    items.append(value)
+        elif isinstance(raw_models, list):
+            items = raw_models
+        else:
+            items = []
+
+        models: List[Dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, str):
+                models.append({"id": item, "owned_by": "nemapi"})
+            elif isinstance(item, dict) and item.get("id"):
+                models.append({
+                    "id": str(item["id"]),
+                    "owned_by": item.get("owned_by", "nemapi"),
+                    "display_name": item.get("display_name")
+                    or str(item["id"]).replace("-", " ").replace("_", " ").title(),
+                })
+
+        self._models_cache = models
+        if models and self.model not in {m["id"] for m in models}:
+            self.model = models[0]["id"]
+        return models
+
+    def send_message(
+        self,
+        message: str,
+        role: str = "user",
+        cancel_event=None,
+        system_prefix: str = "",
+    ) -> Dict[str, Any]:
         """Envoie uniquement le message courant au format OpenAI.
         Le contexte est géré côté API/Bridge, pas ici.
-        
+
         NEMAPI v3 ne gère pas le contexte incrémental, donc on envoie
         uniquement le message courant sans historique.
+
+        ``system_prefix`` permet de fusionner les instructions système et le
+        premier message utilisateur en une SEULE requête HTTP (gain de latence
+        au démarrage d'une session).
+
+        ``cancel_event`` (optionnel) permet d'interrompre une requête bloquante
+        depuis un autre thread (bouton « Interrompre » de l'UI web).
         """
+        prefix = (system_prefix or "").strip()
         if role == "tool_result":
             send_content = (
                 "[TOOL RESULT]\n"
@@ -124,9 +201,17 @@ class NemapiV3Provider(BaseProvider):
         else:
             send_role = role
             send_content = message
+            if prefix:
+                # Merge system instructions + first user message into one request.
+                send_content = (
+                    "[SYSTEM INSTRUCTIONS]\n" + prefix +
+                    "\n\n[USER MESSAGE]\n" + message
+                )
 
         last_error = ""
         for attempt in range(1, self.max_retries + 1):
+            if cancel_event is not None and cancel_event.is_set():
+                return {"success": False, "error": "Requête interrompue par l'utilisateur."}
             try:
                 payload = {
                     "model": self.model,
@@ -136,12 +221,9 @@ class NemapiV3Provider(BaseProvider):
                     # browser-native context for tool-result iterations.
                     "fresh_chat": not self._session_started,
                 }
-                resp = self.req.post(
-                    f"{self.base_url}/v1/chat/completions",
-                    json=payload,
-                    headers={"Content-Type": "application/json"},
-                    timeout=self.timeout,
-                )
+                resp = self._post_cancellable(payload, cancel_event)
+                if resp is None:
+                    return {"success": False, "error": "Requête interrompue par l'utilisateur."}
 
                 if resp.status_code != 200:
                     last_error = f"HTTP {resp.status_code}: {resp.text[:500]}"
@@ -210,6 +292,42 @@ class NemapiV3Provider(BaseProvider):
             "success": False,
             "error": f"Échec après {self.max_retries} tentatives: {last_error}",
         }
+
+    def _post_cancellable(self, payload: Dict[str, Any], cancel_event):
+        """POST bloquant, interruptible via ``cancel_event``.
+
+        La requête s'exécute dans un thread dédié ; on attend son résultat par
+        petits pas afin de pouvoir abandonner sans tuer le thread sous-jacent
+        (limitation de ``requests``/urllib3).
+        """
+        import threading
+
+        result: Dict[str, Any] = {}
+
+        poster = self._session.post if self._session is not None else self.req.post
+
+        def worker():
+            try:
+                result["resp"] = poster(
+                    f"{self.base_url}/v1/chat/completions",
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=(10, self.timeout),
+                )
+            except Exception as exc:  # noqa: BLE001
+                result["exc"] = exc
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        while thread.is_alive():
+            # Small poll interval keeps interrupt latency low without adding
+            # measurable delay to fast responses.
+            thread.join(timeout=0.02)
+            if cancel_event is not None and cancel_event.is_set():
+                return None
+        if "exc" in result:
+            raise result["exc"]
+        return result.get("resp")
 
     def _extract_reply(self, data: Any) -> str:
         """Extrait le texte assistant, y compris tool_calls sérialisés."""

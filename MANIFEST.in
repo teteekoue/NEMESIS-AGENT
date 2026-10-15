@@ -2,8 +2,25 @@ include prompt_system.txt
 include prompt_system_telegram.txt
 include config.yaml
 include mcp_config.yaml
+include telegram_config.yaml
 include agents.json
+include requirements.txt
+include README.md
+include NEMESIS.md
+include TERMUX_INSTALL.md
+include TOOL_CALL_FORMATS.md
 include src/ui/VIBE_UI_LICENSE.txt
 recursive-include tools_library *
 recursive-include src *
 recursive-include providers *
+recursive-include web *.py
+recursive-include web/backend *.py
+recursive-include web/frontend *.html *.json *.ts *.tsx *.js *.css
+recursive-include web/frontend/public *
+include web/requirements.txt
+include web/start.sh
+recursive-include docs *.md
+exclude web/frontend/node_modules
+exclude web/frontend/dist
+global-exclude *.pyc
+global-exclude __pycache__

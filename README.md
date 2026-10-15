@@ -13,14 +13,16 @@ Développé par **Ekoue TETE** (TEJF)
 
 ## 💡 Le projet en bref
 
-NEMESIS est un **agent IA de codage et d'administration système** qui fonctionne dans le terminal. Vous décrivez une tâche en langage naturel ; l'IA choisit l'outil adapté, demande votre autorisation, exécute, puis poursuit à partir du résultat.
+NEMESIS est un **agent IA de codage et d'administration système** disponible en **trois surfaces** : un CLI terminal, un **bot Telegram** et une **interface Web moderne**. Vous décrivez une tâche en langage naturel ; l'IA choisit l'outil adapté, demande votre autorisation, exécute, puis poursuit à partir du résultat.
 
-- **Autonome mais sous contrôle** : chaque action sensible passe par une confirmation explicite (`y` / `n` / `a`)
+- **Autonome mais sous contrôle** : chaque action sensible passe par une confirmation explicite (`y` / `n` / `a`, ou un mode « toutes autorisations » pour les agents autonomes)
+- **Multi-surfaces** : **CLI** (`agent.py` / `cli.py`), **Web** (FastAPI + React) et **Telegram** — tous partagent le même moteur, les mêmes outils et la même mémoire
+- **Mémoire persistante** : NEMESIS retient vos préférences et informations durables, partagées entre le Web, le CLI et le bot
 - **Multi-modèles** : compatible DeepSeek, Qwen, Claude et Gemini via la passerelle [NemApi](https://github.com/teteekoue/NemApi) (protocole OpenAI-compatible)
-- **20+ outils** : fichiers, bash, recherche, processus, upload, recherche web
-- **Extensible** : support du **Model Context Protocol (MCP)**, skills, sous-agents
+- **29 outils** : fichiers, bash, recherche, processus, tâches de fond, recherche web, mémoire, sous-agents, MCP
+- **Intégration GitHub** : connectez un token personnel (PAT) pour doter l'agent d'outils GitHub dédiés (dépôts, issues, PRs, recherche de code) via un serveur **MCP** officiel
+- **Extensible** : support du **Model Context Protocol (MCP)**, skills et sous-agents
 - **Partout** : Linux (Ubuntu, Debian, Fedora) et même **Android via Termux**
-- **Telegram** : pilotage complet de l'agent depuis un bot
 
 ---
 
@@ -28,31 +30,40 @@ NEMESIS est un **agent IA de codage et d'administration système** qui fonctionn
 
 1. [Vue d'Ensemble](#vue-densemble)
 2. [Fonctionnalités Clés](#fonctionnalités-clés)
-3. [Installation](#installation)
-4. [Configuration](#configuration)
-5. [Utilisation](#utilisation)
-6. [Système d'Autorisation](#système-dautorisation)
-7. [Outils Disponibles](#outils-disponibles)
-8. [Sécurité](#sécurité)
-9. [Commandes Slash](#commandes-slash)
-10. [Exemples d'Utilisation](#exemples-dutilisation)
-11. [Bot Telegram](#bot-telegram)
-12. [Développement](#développement)
-13. [Dépannage](#dépannage)
-14. [Licence](#licence)
-15. [Réalisation &amp; Contact](#réalisation--contact)
+3. [Architecture](#architecture)
+4. [Installation](#installation)
+5. [Configuration](#configuration)
+6. [Utilisation](#utilisation)
+7. [Interface Web](#interface-web)
+8. [Mémoire Persistante](#mémoire-persistante)
+9. [Intégration GitHub](#intégration-github)
+10. [Système d'Autorisation](#système-dautorisation)
+11. [Outils Disponibles](#outils-disponibles)
+12. [Sécurité](#sécurité)
+13. [Commandes Slash](#commandes-slash)
+14. [Exemples d'Utilisation](#exemples-dutilisation)
+15. [Bot Telegram](#bot-telegram)
+16. [Performance](#performance)
+17. [Développement](#développement)
+18. [Dépannage](#dépannage)
+19. [Documentation détaillée](#documentation-détaillée)
+20. [Licence](#licence)
+21. [Réalisation &amp; Contact](#réalisation--contact)
 
 ---
 
 ## Vue d'Ensemble
 
-**NEMESIS CLI** est un agent IA autonome de nouvelle génération conçu pour automatiser des tâches complexes sur les systèmes Linux. Il combine une intelligence artificielle avancée avec des capacités d'exécution système contrôlée, offrant une expérience utilisateur fluide et sécurisée.
+**NEMESIS** est un agent IA autonome de nouvelle génération conçu pour automatiser des tâches complexes sur les systèmes Linux. Il combine une intelligence artificielle avancée avec des capacités d'exécution système contrôlée, offrant une expérience utilisateur fluide et sécurisée sur trois surfaces complémentaires (CLI, Web, Telegram).
 
 ### Capacités Principales
 
 - Exécution de commandes système contrôlée et sécurisée
 - Manipulation intelligente de fichiers (lecture, écriture, recherche/remplacement)
 - Gestion de processus et tâches en arrière-plan
+- **Interface Web** moderne et responsive : chat en streaming, terminal PTY, explorateur de fichiers, réglages complets
+- **Mémoire persistante** partagée entre toutes les surfaces
+- **Connexion GitHub** via MCP (token + identité Git)
 - Support du **Model Context Protocol (MCP)**
 - Interface terminal moderne avec **Rich** et **prompt\_toolkit**
 - Interface coding-agent alternative et compacte (`cli.py`)
@@ -102,7 +113,32 @@ NEMESIS supporte plusieurs formats de réponse :
 
 ### Appels d'Outils par Lot
 
-NEMESIS accepte un appel JSON unique ou un tableau JSON d'appels. Les opérations indépendantes de lecture/recherche peuvent ainsi être exécutées dans le même tour, tandis que les écritures dépendantes restent ordonnées. Le registre dynamique est la source canonique des noms, schémas et niveaux de risque exposés au CLI, à Telegram et aux sous-agents.
+NEMESIS accepte un appel JSON unique ou un tableau JSON d'appels. Les opérations indépendantes de lecture/recherche peuvent ainsi être exécutées dans le même tour, tandis que les écritures dépendantes restent ordonnées. Le registre dynamique est la source canonique des noms, schémas et niveaux de risque exposés au CLI, à Telegram, au Web et aux sous-agents.
+
+### Interface Web
+
+Une interface Web complète (React + Vite + Tailwind + shadcn/ui) offre :
+
+- Chat en streaming via WebSocket avec **timings** (réflexion, durée de chaque outil, durée du tour)
+- **Terminal PTY réel** intégré (xterm.js)
+- **Explorateur de fichiers** du workspace
+- **Réglages complets** : connexion/modèle, général/sécurité, mémoire, MCP, skills, outils, GitHub, Telegram
+- **Mode d'autorisation** par session (`Confirmation` ou `Toutes autorisations`)
+- Thème **blanc-bleu** (clair) et **bleu nuit** (sombre), entièrement responsive (mobile → desktop)
+
+Voir [docs/WEB_UI.md](docs/WEB_UI.md).
+
+### Mémoire Persistante
+
+NEMESIS mémorise des faits durables (préférences, identité, contexte récurrent) dans des mini-blocs stockés dans le répertoire de configuration. Elle est **injectée automatiquement** dans le prompt système de chaque nouvelle session et **partagée entre le Web, le CLI et Telegram**. L'agent peut aussi lire/écrire la mémoire via des outils dédiés (`memory_add`, `memory_search`, ...).
+
+Voir [docs/MEMORY.md](docs/MEMORY.md).
+
+### Intégration GitHub
+
+En renseignant un **token personnel GitHub (PAT)** depuis les réglages, NEMESIS enregistre un serveur **MCP GitHub** officiel (`@modelcontextprotocol/server-github`) et l'alimente avec le token. L'agent obtient alors des outils GitHub dédiés **sans alourdir le registre d'outils principal**.
+
+Voir [docs/GITHUB.md](docs/GITHUB.md).
 
 ---
 
@@ -110,8 +146,9 @@ NEMESIS accepte un appel JSON unique ou un tableau JSON d'appels. Les opération
 
 ```text
 nemesis-cli/
-├── agent.py                 # Point d'entrée principal
+├── agent.py                 # Point d'entrée CLI principal
 ├── cli.py                   # Lanceur de l'interface coding-agent alternative
+├── telegram_bot.py          # Bot Telegram (même moteur, mémoire partagée)
 ├── action_parser.py         # Parseur multi-niveaux des réponses IA
 ├── tools.py                 # Exécuteur d'outils principal
 ├── tools_schema.py          # Schéma centralisé des outils disponibles
@@ -125,11 +162,15 @@ nemesis-cli/
 ├── .gitignore               # Fichiers à exclure du versionnage
 ├── src/
 │   ├── core/
-│   │   ├── commands.py      # Système de commandes slash
+│   │   ├── commands.py          # Système de commandes slash
 │   │   ├── default_commands.py
-│   │   ├── mcp_client.py     # Client MCP
-│   │   ├── mcp_manager.py    # Gestionnaire MCP
-│   │   ├── tool_registry.py  # Registre des outils
+│   │   ├── agent_tools.py       # Registre unifié + prompt système + outils mémoire
+│   │   ├── memory_store.py      # Mémoire persistante (préférences + mini-blocs)
+│   │   ├── github_settings.py   # Connexion GitHub + synchronisation MCP
+│   │   ├── mcp_client.py        # Client MCP
+│   │   ├── mcp_manager.py       # Gestionnaire MCP (pool de serveurs)
+│   │   ├── tool_registry.py     # Registre des outils
+│   │   ├── paths.py             # Résolution des chemins (install vs user config)
 │   │   └── ...
 │   └── ui/
 │       ├── composer.py      # Orchestration I/O
@@ -139,9 +180,24 @@ nemesis-cli/
 ├── providers/
 │   ├── base.py              # Provider de base
 │   └── nemapi_v3.py         # Provider NEMAPI (nom public : NEMAPI)
+├── web/                     # Interface Web (backend FastAPI + frontend React)
+│   ├── backend/
+│   │   ├── app.py               # API REST + WebSockets (/ws/chat, /ws/terminal)
+│   │   ├── agent_runner.py      # Moteur web (streaming d'événements)
+│   │   ├── config_store.py      # Pont vers la config CLI partagée
+│   │   ├── settings.py          # MCP / skills / mémoire
+│   │   ├── github_settings.py   # Wrapper GitHub pour le web
+│   │   ├── telegram_settings.py # Overlay config bot Telegram
+│   │   ├── sessions.py          # Persistance des sessions
+│   │   └── terminal.py          # PTY
+│   ├── frontend/            # React + Vite + Tailwind + shadcn/ui
+│   ├── requirements.txt     # Dépendances backend web
+│   └── start.sh             # Lancement backend + frontend (dev)
 ├── tests/                   # Tests unitaires
 └── tools_library/           # Bibliothèque de skills extensibles
 ```
+
+Les données utilisateur (config, mémoire, sessions web, token GitHub, config bot Telegram) sont stockées dans `~/.config/nemesis-cli/` et **partagées par toutes les surfaces**.
 
 ---
 
@@ -153,6 +209,11 @@ nemesis-cli/
 - **Python** : 3.10 ou supérieur
 - **Mémoire** : 4 Go minimum recommandés
 - **Espace disque** : 2 Go minimum
+
+Pour l'**interface Web** uniquement :
+
+- **Node.js** 18+ et **npm** (build/frontend)
+- **Node.js** est également requis par `npx` pour le serveur **MCP GitHub**
 
 ### Méthode 1 : Android / Termux (32 bits)
 
@@ -192,6 +253,25 @@ Le script d'installation :
 - Crée l'environnement virtuel
 - Installe les dépendances
 - Configure les fichiers de base
+
+### Interface Web (développement)
+
+L'interface Web se lance en une commande (backend FastAPI + frontend Vite) :
+
+```bash
+# Dépendances backend web (une seule fois)
+pip install -r web/requirements.txt
+
+# Lancement backend + frontend (dev)
+./web/start.sh
+```
+
+- Backend : `http://localhost:8000` (variable `NEMESIS_WEB_PORT`)
+- Frontend : `http://localhost:5173` (variable `NEMESIS_FRONTEND_PORT`)
+
+Un raccourci `./web/start.sh` installe aussi automatiquement les dépendances npm au premier lancement.
+
+Pour un déploiement « tout-en-un » (le backend FastAPI sert le build React), voir [docs/WEB_UI.md](docs/WEB_UI.md).
 
 ### Interface Coding-Agent Alternative
 
@@ -359,7 +439,7 @@ Pour les commandes potentiellement interactives (contenant `sudo`, `read`, `-p`)
 
 ## Outils Disponibles
 
-NEMESIS supporte actuellement **20 outils** différents, organisés en catégories :
+NEMESIS expose actuellement **29 outils** via un registre dynamique (source canonique des noms, schémas et niveaux de risque), organisés en catégories. Le registre est partagé par le CLI, le Web, Telegram et les sous-agents.
 
 ### Outils de Fichiers
 
@@ -416,14 +496,42 @@ NEMESIS supporte actuellement **20 outils** différents, organisés en catégori
 | `mcp_call`       | Appelle un outil MCP              | `server: str`, `tool: str`, `arguments: dict` |
 
 
+Le registre MCP **met en cache les serveurs** (pool) : un serveur lancé reste chaud pendant une courte fenêtre, ce qui évite le coût de démarrage (`npx`/`uvx`) à chaque appel. C'est ce mécanisme qui alimente les outils GitHub.
+
+### Outils de Mémoire
+
+
+| Outil           | Description                                       | Paramètres                        |
+| --------------- | ------------------------------------------------- | --------------------------------- |
+| `memory_add`    | Ajoute un bloc de mémoire                         | `title: str`, `content: str`, `tags: list?` |
+| `memory_update` | Crée/actualise un bloc via une clé stable         | `key: str`, `title: str`, `content: str` |
+| `memory_search` | Recherche dans la mémoire                         | `query: str?`, `tags: list?`, `limit: int?` |
+| `memory_get`    | Lit un bloc (ou liste tout)                       | `block_id: str?`                  |
+| `memory_delete` | Supprime un bloc                                  | `block_id: str`                   |
+| `memory_clear`  | Vide toute la mémoire                             | -                                 |
+
+
+### Outils de Planification et Sous-Agents
+
+
+| Outil            | Description                                   | Paramètres                    |
+| ---------------- | --------------------------------------------- | ----------------------------- |
+| `todo`           | Gère un plan de travail                       | `action: str`, `content/items/id/status` |
+| `list_agents`    | Liste les sous-agents disponibles             | -                             |
+| `delegate_task`  | Délègue une tâche à un sous-agent (non bloquant) | `agent: str`, `instruction: str` |
+| `check_reports`  | Liste les rapports de tâches terminées         | `task_id: str?`               |
+| `agent_status`   | État des sous-agents et des tâches             | `agent: str?`, `task_id: str?` |
+| `skills_list`    | Liste les skills installées                    | -                             |
+
 ### Outils Divers
 
 
 | Outil            | Description                     | Paramètres                                 |
 | ---------------- | ------------------------------- | ------------------------------------------ |
 | `web_search`     | Effectue une recherche web      | `query: str`                               |
-| `upload`         | Upload un fichier               | `file_path: str`                           |
-| `update_tracker` | Met à jour le tracker de tâches | `project: str`, `task: str`, `status: str` |
+| `web_fetch`      | Récupère le contenu d'une URL   | `url: str`, `format: str?`                 |
+| `git`            | Statut/diff/log/branch          | `action: str`, `path: str?`, `limit: int?` |
+| `apply_patch`    | Applique un patch (unified diff)| `patch: str`, `dry_run: bool?`             |
 
 
 ---
@@ -626,6 +734,93 @@ Autoriser ? (y=oui une fois / n=non / a=toujours autoriser)
 
 ---
 
+## Interface Web
+
+NEMESIS embarque une interface Web moderne et responsive, servie par un backend **FastAPI** et une SPA **React**.
+
+### Lancer l'interface Web
+
+```bash
+# Mode développement (backend + frontend, hot-reload)
+./web/start.sh
+
+# Ou manuellement :
+pip install -r web/requirements.txt
+python -m web.backend            # API sur le port 8000
+cd web/frontend && npm install && npm run dev   # UI sur le port 5173
+```
+
+### Fonctionnalités
+
+- **Chat en streaming** (WebSocket `/ws/chat`) avec indicateurs de temps en temps réel
+- **Mode d'autorisation** par session : `Confirmation` (outils à risque) ou `Toutes autorisations`
+- **Terminal PTY réel** (WebSocket `/ws/terminal`, xterm.js)
+- **Explorateur de fichiers** du workspace
+- **Réglages** complets (8 onglets) : Connexion, Général, Mémoire, MCP, Skills, Outils, GitHub, Telegram
+- **Sessions** persistantes, reprises après rechargement
+- **Thème** blanc-bleu (clair, par défaut) et bleu nuit (sombre), persisté localement
+- **Responsive** : barre latérale en tiroir sur mobile, mise en page adaptée de 375 px à 1440 px+
+
+### Aperçu fictif (démo)
+
+Pour prévisualiser l'UI sans serveur NEMAPI, ouvrez l'URL avec `?demo=1` :
+
+```bash
+http://localhost:5173/?demo=1
+```
+
+### Déploiement « tout-en-un »
+
+Le backend sert automatiquement le build React s'il existe :
+
+```bash
+cd web/frontend && npm install && npm run build   # produit web/frontend/dist
+python -m web.backend                             # sert l'API ET l'UI sur le même port
+```
+
+Détails complets, API REST et variables d'environnement : [docs/WEB_UI.md](docs/WEB_UI.md).
+
+---
+
+## Mémoire Persistante
+
+NEMESIS peut mémoriser des informations durables sur vous et votre environnement, puis les réinjecter dans le prompt système à chaque nouvelle session.
+
+- Stockage local : `~/.config/nemesis-cli/memory/` (`prefs.json` + `blocks.json`)
+- **Partagée** entre le Web, le CLI et le bot Telegram (un seul espace mémoire)
+- Gérée depuis l'onglet **Mémoire** des réglages web, ou par l'agent lui-même via ses outils `memory_*`
+- Activable/désactivable à tout moment
+
+Détails : [docs/MEMORY.md](docs/MEMORY.md).
+
+---
+
+## Intégration GitHub
+
+Connectez un **token personnel GitHub (PAT)** dans l'onglet **GitHub** des réglages. NEMESIS :
+
+1. enregistre et protège vos identifiants (nom, email, login, token) dans `~/.config/nemesis-cli/github.yaml` ;
+2. crée automatiquement un serveur **MCP GitHub** (`npx -y @modelcontextprotocol/server-github`) alimenté par votre token ;
+3. dote l'agent d'outils GitHub dédiés (dépôts, issues, pull requests, recherche de code) — utilisables via `mcp_tools_list("github")` puis `mcp_call`.
+
+Aucun outil système supplémentaire n'est ajouté au registre principal : tout passe par MCP.
+
+Détails : [docs/GITHUB.md](docs/GITHUB.md).
+
+---
+
+## Performance
+
+Plusieurs optimisations réduisent la latence perçue :
+
+- **Première requête unifiée** : le prompt système (outils + mémoire) est fusionné avec le premier message utilisateur, ce qui supprime un aller-retour provider au démarrage d'une session (1 requête au lieu de 2).
+- **Sessions HTTP persistantes** (keep-alive) côté provider.
+- **Mise en cache** : test de connexion (TTL), catalogue d'outils (TTL), résolution des chemins.
+- **Pool de serveurs MCP** : les serveurs (dont GitHub) restent chauds entre deux appels.
+- **Frontend** : composants mémoïsés, auto-scroll non intrusif, thème appliqué sans flash.
+
+---
+
 ## Bot Telegram
 
 NEMESIS propose également un bot Telegram qui permet d'utiliser toutes les fonctionnalités de l'agent directement depuis Telegram.
@@ -633,21 +828,23 @@ NEMESIS propose également un bot Telegram qui permet d'utiliser toutes les fonc
 ### Configuration du Bot
 
 1. **Créer un bot Telegram** :
-  - Ouvrez Telegram et recherchez @BotFather
-  - Envoyez `/newbot` et suivez les instructions
-  - Récupérez le token du bot
-2. **Configurer le bot NEMESIS** — créez un fichier `telegram_config.yaml` :
-  ```yaml
-   token: "VOTRE_TOKEN_TELEGRAM"
-   workspace: "./workspace"
-  ```
-
-   Ou définissez la variable d'environnement :
+   - Ouvrez Telegram et recherchez @BotFather
+   - Envoyez `/newbot` et suivez les instructions
+   - Récupérez le token du bot
+2. **Configurer le bot NEMESIS** — deux méthodes :
+   - **Depuis l'interface Web** (recommandé) : onglet **Telegram** des réglages, collez le token. Il est enregistré dans `~/.config/nemesis-cli/telegram_bot.yaml` (overlay fusionné avec `telegram_config.yaml`) et **partagé** avec le bot.
+   - **Fichier local** : créez/éditez `telegram_config.yaml` :
+   ```yaml
+    token: "VOTRE_TOKEN_TELEGRAM"
+    workspace: "./workspace"
+   ```
 3. **Démarrer le bot** :
   ```bash
-   chmod +x run_telegram_bot.sh
-   ./run_telegram_bot.sh
-  ```
+    chmod +x run_telegram_bot.sh
+    ./run_telegram_bot.sh
+   ```
+
+Le bot partage la **même mémoire** et le **même moteur** que le Web et le CLI. Par défaut il dispose de **toutes les autorisations** (mode autonome).
 
 ### Commandes du Bot
 
@@ -776,6 +973,15 @@ Affiche des informations détaillées sur :
 - Les réponses LLM
 - Les appels d'outils
 - Les erreurs
+
+---
+
+## Documentation détaillée
+
+- [docs/WEB_UI.md](docs/WEB_UI.md) — Interface Web : installation, lancement, architecture, API REST/WebSocket, responsive, déploiement.
+- [docs/MEMORY.md](docs/MEMORY.md) — Mémoire persistante : fonctionnement, partage CLI/Web/Telegram, outils, fichiers.
+- [docs/GITHUB.md](docs/GITHUB.md) — Intégration GitHub : connexion par PAT, serveur MCP généré, usage par l'agent.
+- [docs/CHANGELOG.md](docs/CHANGELOG.md) — Journal des modifications (rapports de session).
 
 ---
 

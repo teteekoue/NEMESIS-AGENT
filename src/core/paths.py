@@ -45,8 +45,19 @@ def _find_resource(name: str) -> Optional[Path]:
     return None
 
 
+_DIRS_ENSURED = False
+
+
 def ensure_user_dirs() -> Path:
-    """Create user config directory and seed defaults from install if missing."""
+    """Create user config directory and seed defaults from install if missing.
+
+    Runs at most once per process: the directory tree and seed files do not
+    change during a session, so repeated stat/scan calls are pure overhead on
+    hot paths such as config serialization.
+    """
+    global _DIRS_ENSURED
+    if _DIRS_ENSURED and USER_CONFIG_DIR.exists():
+        return USER_CONFIG_DIR
     USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     _seed_if_missing(CONFIG_NAME)
     _seed_if_missing(MCP_CONFIG_NAME)
@@ -60,6 +71,7 @@ def ensure_user_dirs() -> Path:
             user_lib.mkdir(parents=True, exist_ok=True)
     elif not user_lib.exists():
         user_lib.mkdir(parents=True, exist_ok=True)
+    _DIRS_ENSURED = True
     return USER_CONFIG_DIR
 
 
@@ -87,6 +99,12 @@ def mcp_config_path() -> Path:
         return user
     install = _find_resource(MCP_CONFIG_NAME)
     return install if install and install.exists() else user
+
+
+def github_path() -> Path:
+    """Shared GitHub connection settings (web + CLI + Telegram)."""
+    ensure_user_dirs()
+    return USER_CONFIG_DIR / "github.yaml"
 
 
 def agents_path() -> Path:
