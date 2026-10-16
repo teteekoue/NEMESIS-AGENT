@@ -89,26 +89,23 @@ class NemapiV3Provider(BaseProvider):
         self.max_retries = 3
         self.retry_delay = 1
         self._conversation: List[Dict[str, str]] = []
-        # A NEMAPI conversation lives on the server. ``_session_started`` tracks
-        # whether THIS logical conversation already has server-side context, so
-        # we only ever ask for a fresh chat when the user truly starts a new
-        # conversation. It can be primed from persisted state (see
-        # ``configure_session``) so resuming a session after a restart does NOT
-        # reset the provider context nor resend the system prompt.
+        # NemApi keeps the conversation in the browser tab. ``fresh_chat`` is
+        # ALWAYS sent as False (see ``send_message``): NEMESIS never asks the
+        # extension to reload the provider page. ``_prompt_sent`` only tracks
+        # whether the system prompt / tool catalogue was already delivered for
+        # this logical session, so a resumed session does not resend it.
         self.session_id: Optional[str] = None
-        self._session_started = False
         self._prompt_sent = False
 
-    def configure_session(self, session_id: Optional[str], started: bool = False) -> None:
+    def configure_session(self, session_id: Optional[str], initialized: bool = False) -> None:
         """Bind this provider instance to a persisted logical session.
 
-        ``started`` reflects whether the server-side NEMAPI conversation for
-        ``session_id`` already exists. When ``started`` is True we resume that
-        conversation (never ``fresh_chat``) and suppress the system prompt.
+        ``initialized`` reflects whether the system prompt was already sent for
+        this session. When True the prompt is suppressed on resume. ``fresh_chat``
+        is never affected: it is always False regardless of this call.
         """
         self.session_id = session_id or None
-        self._session_started = bool(started)
-        self._prompt_sent = bool(started)
+        self._prompt_sent = bool(initialized)
 
     def test_connection(self, max_age: float = 20.0) -> bool:
         """Teste /status puis /v1/models puis la racine.
@@ -238,14 +235,13 @@ class NemapiV3Provider(BaseProvider):
                     "model": self.model,
                     "messages": [{"role": send_role, "content": send_content}],
                     "stream": False,
-                    # Request a brand-new NEMAPI chat ONLY the first time this
-                    # logical conversation is used. Resuming a persisted session
-                    # (or any tool-result / follow-up turn) keeps the server-side
-                    # context: NEMESIS never spontaneously starts a new chat.
-                    "fresh_chat": not self._session_started,
+                    # ALWAYS false: NemApi's ``fresh_chat`` makes the browser
+                    # extension reload the provider page (a brand-new chat URL).
+                    # NEMESIS must never trigger that reload — neither for a new
+                    # conversation nor when resuming one. Conversation lifecycle
+                    # is handled by the user on the NemApi side.
+                    "fresh_chat": False,
                 }
-                if self.session_id:
-                    payload["session_id"] = self.session_id
                 resp = self._post_cancellable(payload, cancel_event)
                 if resp is None:
                     return {"success": False, "error": "Requête interrompue par l'utilisateur."}
@@ -264,7 +260,6 @@ class NemapiV3Provider(BaseProvider):
                     data = json.loads(text)
                     if isinstance(data, dict) and 'choices' in data:
                         reply = self._extract_reply(data)
-                        self._session_started = True
                         self._prompt_sent = True
                         return {"success": True, "response": reply}
                 except json.JSONDecodeError:
@@ -295,7 +290,6 @@ class NemapiV3Provider(BaseProvider):
                             continue
                     
                     if full_content:
-                        self._session_started = True
                         self._prompt_sent = True
                         return {"success": True, "response": full_content}
                 

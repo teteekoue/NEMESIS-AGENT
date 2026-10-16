@@ -60,7 +60,7 @@ class AgentRunner:
         # was already initialized NEMAPI keeps the server-side context, so we
         # must not request a fresh chat nor resend the system prompt.
         if hasattr(self.provider, "configure_session"):
-            self.provider.configure_session(session_id, started=self._session_initialized)
+            self.provider.configure_session(session_id, initialized=self._session_initialized)
         self.executor = create_executor_from_config(config, bridge=self.provider)
 
         valid_tools: set = set()
