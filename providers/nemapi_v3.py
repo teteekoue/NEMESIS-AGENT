@@ -89,7 +89,26 @@ class NemapiV3Provider(BaseProvider):
         self.max_retries = 3
         self.retry_delay = 1
         self._conversation: List[Dict[str, str]] = []
+        # A NEMAPI conversation lives on the server. ``_session_started`` tracks
+        # whether THIS logical conversation already has server-side context, so
+        # we only ever ask for a fresh chat when the user truly starts a new
+        # conversation. It can be primed from persisted state (see
+        # ``configure_session``) so resuming a session after a restart does NOT
+        # reset the provider context nor resend the system prompt.
+        self.session_id: Optional[str] = None
         self._session_started = False
+        self._prompt_sent = False
+
+    def configure_session(self, session_id: Optional[str], started: bool = False) -> None:
+        """Bind this provider instance to a persisted logical session.
+
+        ``started`` reflects whether the server-side NEMAPI conversation for
+        ``session_id`` already exists. When ``started`` is True we resume that
+        conversation (never ``fresh_chat``) and suppress the system prompt.
+        """
+        self.session_id = session_id or None
+        self._session_started = bool(started)
+        self._prompt_sent = bool(started)
 
     def test_connection(self, max_age: float = 20.0) -> bool:
         """Teste /status puis /v1/models puis la racine.
@@ -183,12 +202,14 @@ class NemapiV3Provider(BaseProvider):
 
         ``system_prefix`` permet de fusionner les instructions système et le
         premier message utilisateur en une SEULE requête HTTP (gain de latence
-        au démarrage d'une session).
+        au démarrage d'une session). Il n'est appliqué qu'une seule fois par
+        conversation logique : le prompt système et le catalogue d'outils ne
+        sont JAMAIS renvoyés sur une reprise de session.
 
         ``cancel_event`` (optionnel) permet d'interrompre une requête bloquante
         depuis un autre thread (bouton « Interrompre » de l'UI web).
         """
-        prefix = (system_prefix or "").strip()
+        prefix = "" if self._prompt_sent else (system_prefix or "").strip()
         if role == "tool_result":
             send_content = (
                 "[TOOL RESULT]\n"
@@ -217,10 +238,14 @@ class NemapiV3Provider(BaseProvider):
                     "model": self.model,
                     "messages": [{"role": send_role, "content": send_content}],
                     "stream": False,
-                    # Start Nemesis on a clean provider chat, then keep the
-                    # browser-native context for tool-result iterations.
+                    # Request a brand-new NEMAPI chat ONLY the first time this
+                    # logical conversation is used. Resuming a persisted session
+                    # (or any tool-result / follow-up turn) keeps the server-side
+                    # context: NEMESIS never spontaneously starts a new chat.
                     "fresh_chat": not self._session_started,
                 }
+                if self.session_id:
+                    payload["session_id"] = self.session_id
                 resp = self._post_cancellable(payload, cancel_event)
                 if resp is None:
                     return {"success": False, "error": "Requête interrompue par l'utilisateur."}
@@ -240,6 +265,7 @@ class NemapiV3Provider(BaseProvider):
                     if isinstance(data, dict) and 'choices' in data:
                         reply = self._extract_reply(data)
                         self._session_started = True
+                        self._prompt_sent = True
                         return {"success": True, "response": reply}
                 except json.JSONDecodeError:
                     pass
@@ -270,6 +296,7 @@ class NemapiV3Provider(BaseProvider):
                     
                     if full_content:
                         self._session_started = True
+                        self._prompt_sent = True
                         return {"success": True, "response": full_content}
                 
                 # Si aucun contenu n'a été extrait, retourner une erreur

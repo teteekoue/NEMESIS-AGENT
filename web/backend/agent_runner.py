@@ -49,6 +49,18 @@ class AgentRunner:
         self.provider = create_provider(config)
         if model:
             self.provider.model = model
+        self._session_initialized = False
+        if session_id is not None:
+            try:
+                from web.backend import sessions as session_store
+                self._session_initialized = session_store.is_initialized(session_id)
+            except Exception:
+                self._session_initialized = False
+        # Bind the provider to the persisted logical session: when the session
+        # was already initialized NEMAPI keeps the server-side context, so we
+        # must not request a fresh chat nor resend the system prompt.
+        if hasattr(self.provider, "configure_session"):
+            self.provider.configure_session(session_id, started=self._session_initialized)
         self.executor = create_executor_from_config(config, bridge=self.provider)
 
         valid_tools: set = set()
@@ -63,7 +75,7 @@ class AgentRunner:
         self._auth_results: Dict[str, str] = {}
         self._busy = threading.Event()
         self._conn_ok: Optional[bool] = None
-        self._prompt_sent = False
+        self._prompt_sent = self._session_initialized
 
     # ------------------------------------------------------------------
     # event plumbing
@@ -158,10 +170,14 @@ class AgentRunner:
 
         # The system prompt (tools catalog + memory) is merged into the first
         # user message so a new session costs a single round-trip instead of two.
+        # It is only ever sent once per logical session: resuming an existing
+        # conversation never resends the prompt or the tool catalogue.
         system_prefix = ""
+        prompt_will_send = False
         if not self._prompt_sent:
             if hasattr(self.executor, "get_system_prompt"):
                 system_prefix = self.executor.get_system_prompt() or ""
+            prompt_will_send = bool(system_prefix)
             self._prompt_sent = True
 
         current_input = message
@@ -205,6 +221,19 @@ class AgentRunner:
             if not result.get("success"):
                 self.emit("error", message=result.get("error", "Erreur inconnue du provider."))
                 break
+
+            # Once the first request of a session succeeds, the NEMAPI
+            # conversation now holds the system prompt: persist that fact so a
+            # later resume never resends it nor restarts the chat.
+            if prompt_will_send and not self._session_initialized:
+                prompt_will_send = False
+                self._session_initialized = True
+                if self.session_id:
+                    try:
+                        from web.backend import sessions as session_store
+                        session_store.mark_initialized(self.session_id)
+                    except Exception:
+                        pass
 
             raw = result.get("response", "") or ""
             parsed = self.parser.parse(raw)

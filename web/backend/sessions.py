@@ -45,6 +45,10 @@ def create_session(title: Optional[str] = None, model: str = "") -> Dict[str, An
             "created_at": _now(),
             "updated_at": _now(),
             "messages": [],
+            # Whether the server-side NEMAPI conversation has already received
+            # the system prompt. Used to resume a session without ever resending
+            # the prompt or starting a new NEMAPI chat.
+            "nemapi_initialized": False,
         }
         _write(session)
         return session
@@ -119,6 +123,24 @@ def set_title(session_id: str, title: str) -> Optional[Dict[str, Any]]:
         session["title"] = title
         _write(session)
         return session
+
+
+def mark_initialized(session_id: str) -> Optional[Dict[str, Any]]:
+    """Flag that the NEMAPI conversation already has its system prompt."""
+    with _LOCK:
+        session = get_session(session_id)
+        if session is None:
+            return None
+        session["nemapi_initialized"] = True
+        _write(session)
+        return session
+
+
+def is_initialized(session_id: str) -> bool:
+    if not session_id:
+        return False
+    session = get_session(session_id)
+    return bool(session and session.get("nemapi_initialized"))
 
 
 def delete_session(session_id: str) -> bool:
