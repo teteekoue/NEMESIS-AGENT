@@ -24,7 +24,7 @@ _LOCK = threading.RLock()
 DEFAULT_CONFIG: Dict[str, Any] = {
     "provider": {"type": "nemapi", "model": "qwen-chat"},
     "nemapi": {"host": "127.0.0.1", "port": 8090},
-    "security": {"workspace": str(DEFAULT_WORKSPACE)},
+    "security": {"workspace": str(DEFAULT_WORKSPACE), "approval_mode": "all"},
 }
 
 
@@ -51,11 +51,11 @@ def _normalize(raw: Dict[str, Any] | None) -> Dict[str, Any]:
         config["nemapi"].pop("url", None)
 
     if not isinstance(config.get("security"), dict):
-        config["security"] = {"workspace": str(DEFAULT_WORKSPACE)}
+        config["security"] = {"workspace": str(DEFAULT_WORKSPACE), "approval_mode": "all"}
     ws = resolve_workspace(config)
     config["security"]["workspace"] = str(ws)
-    mode = str(config["security"].get("approval_mode") or "confirm").lower()
-    config["security"]["approval_mode"] = mode if mode in {"all", "confirm"} else "confirm"
+    mode = str(config["security"].get("approval_mode") or "all").lower()
+    config["security"]["approval_mode"] = mode if mode in {"all", "confirm"} else "all"
 
     return config
 
@@ -137,7 +137,7 @@ def public_config() -> Dict[str, Any]:
         "model": config.get("provider", {}).get("model", ""),
         "security": {
             "workspace": security.get("workspace", ""),
-            "approval_mode": security.get("approval_mode", "confirm"),
+            "approval_mode": security.get("approval_mode", "all"),
             "auto_approve_reads": security.get("auto_approve_reads", True),
             "confirm_high_risk": security.get("confirm_high_risk", True),
             "show_tool_outputs": security.get("show_tool_outputs", False),

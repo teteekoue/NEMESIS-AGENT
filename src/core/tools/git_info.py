@@ -50,8 +50,14 @@ def git_info(
     path: Optional[str] = None,
     limit: int = 20,
 ) -> GitResult:
+    from ..paths import resolve_existing_path
+
     action = (action or "status").lower().strip()
-    cwd = workspace_dir
+    cwd = os.getcwd()
+    if path:
+        candidate = resolve_existing_path(path)
+        if os.path.isdir(candidate):
+            cwd = candidate
 
     # Ensure we are inside a git repo (walk up)
     probe = _run_git(["rev-parse", "--show-toplevel"], cwd)

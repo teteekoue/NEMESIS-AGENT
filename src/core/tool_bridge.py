@@ -4,6 +4,7 @@ This allows a gradual migration: the agent loop can use the new tool system
 while the existing provider layer stays unchanged.
 """
 
+import os
 from typing import Dict, Any, Generator
 from pathlib import Path
 from src.core.agent_tools import create_registry, build_system_prompt, build_feedback
@@ -33,19 +34,10 @@ class ToolBridge:
                 return "high"
         return risk
 
-    def _check_paths(self, tool_name: str, parameters: Dict[str, Any]) -> str | None:
-        path_keys = ("path", "file_path", "target_file", "filename", "workdir")
-        for key in path_keys:
-            value = parameters.get(key)
-            if not value:
-                continue
-            values = value if isinstance(value, list) else [value]
-            for raw in values:
-                candidate = Path(str(raw)).expanduser()
-                resolved = (candidate if candidate.is_absolute() else self.workspace_root / candidate).resolve()
-                if resolved != self.workspace_root and self.workspace_root not in resolved.parents:
-                    return f"Path outside workspace is not allowed: {raw}"
-        return None
+    def _resolve_tool_path(self, raw) -> str:
+        from src.core.paths import resolve_existing_path
+
+        return resolve_existing_path(raw, fallback_base=self.workspace_root)
 
     def _check_read_before_write(self, tool_name: str, parameters: Dict[str, Any]) -> str | None:
         if tool_name not in {"edit", "delete_file"}:
@@ -53,8 +45,8 @@ class ToolBridge:
         raw = parameters.get("file_path") or parameters.get("target_file") or parameters.get("path")
         if not raw:
             return None
-        path = (self.workspace_root / str(raw)).resolve()
-        if path.exists() and str(path) not in self._read_paths:
+        path = self._resolve_tool_path(raw)
+        if os.path.exists(path) and path not in self._read_paths:
             return f"Read the existing file with read_file before using {tool_name}: {raw}"
         return None
 
@@ -64,10 +56,6 @@ class ToolBridge:
     def _execute(self, tool_name: str, parameters: Dict[str, Any]):
         try:
             parameters = parameters or {}
-            path_error = self._check_paths(tool_name, parameters)
-            if path_error:
-                yield {"success": False, "stdout": path_error, "error": path_error}
-                return
             read_error = self._check_read_before_write(tool_name, parameters)
             if read_error:
                 yield {"success": False, "stdout": read_error, "error": read_error}
@@ -223,7 +211,7 @@ class ToolBridge:
                 read_values = parameters.get("paths") or [parameters.get("path")]
                 for raw in read_values:
                     if raw:
-                        self._read_paths.add(str((self.workspace_root / str(raw)).resolve()))
+                        self._read_paths.add(self._resolve_tool_path(raw))
 
             if isinstance(result, dict):
                 yield result
@@ -234,7 +222,7 @@ class ToolBridge:
                     if tool_name == "read_file" and getattr(item, "get", lambda *_: False)("success"):
                         for raw in parameters.get("paths") or [parameters.get("path")]:
                             if raw:
-                                self._read_paths.add(str((self.workspace_root / str(raw)).resolve()))
+                                self._read_paths.add(self._resolve_tool_path(raw))
                     yield item
                 return
 

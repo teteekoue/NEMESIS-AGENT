@@ -129,6 +129,60 @@ def tools_library_path() -> Path:
     return USER_CONFIG_DIR / TOOLS_LIBRARY_NAME
 
 
+def system_base_dir() -> Path:
+    """Base directory used to resolve relative paths across the whole system.
+
+    Relative paths are interpreted from the process working directory so the
+    agent can reach any file on the machine instead of being confined to the
+    configured workspace.
+    """
+    try:
+        return Path(os.getcwd())
+    except OSError:
+        return Path.home()
+
+
+def resolve_path(path_str, base=None) -> str:
+    """Resolve a path anywhere on the system.
+
+    - ``~`` and ``$VARIABLES`` are expanded.
+    - Absolute paths are returned (realpath applied when possible).
+    - Relative paths resolve against ``base`` (default: current working
+      directory) and are never confined to a project workspace.
+    """
+    raw = os.path.expandvars(str(path_str if path_str is not None else "")).strip()
+    if raw.startswith("~"):
+        raw = os.path.expanduser(raw)
+    p = Path(raw)
+    if not p.is_absolute():
+        base_dir = Path(base) if base is not None else system_base_dir()
+        if base_dir.is_file():
+            base_dir = base_dir.parent
+        p = base_dir / p
+    try:
+        return os.path.realpath(str(p))
+    except OSError:
+        return os.path.normpath(str(p))
+
+
+def resolve_existing_path(path_str, base=None, fallback_base=None) -> str:
+    """Resolve a path, preferring an existing location anywhere on the system.
+
+    The system-resolved location is tried first. If it does not exist and a
+    ``fallback_base`` is provided (typically the configured workspace), the
+    path is also tried relative to that base so legacy workspace-relative
+    paths keep working.
+    """
+    resolved = resolve_path(path_str, base)
+    if os.path.exists(resolved):
+        return resolved
+    if fallback_base is not None:
+        alt = resolve_path(path_str, fallback_base)
+        if os.path.exists(alt):
+            return alt
+    return resolved
+
+
 def resolve_workspace(config: Optional[dict] = None) -> Path:
     """Resolve workspace directory from config or defaults; ensure it exists."""
     ws = None

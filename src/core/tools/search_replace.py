@@ -3,6 +3,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional, List
 
+from ..paths import resolve_existing_path
+
 
 @dataclass
 class SearchReplaceInput:
@@ -57,12 +59,7 @@ def search_replace(
     workspace_dir: str,
     replace_all: bool = False,
 ) -> SearchReplaceResult:
-    resolved = os.path.join(workspace_dir, file_path) if not os.path.isabs(file_path) else file_path
-
-    try:
-        resolved = os.path.realpath(resolved)
-    except OSError:
-        pass
+    resolved = resolve_existing_path(file_path, fallback_base=workspace_dir)
 
     if old_string == new_string:
         return SearchReplaceResult(

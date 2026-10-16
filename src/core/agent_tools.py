@@ -786,7 +786,9 @@ def _write_file(file_path: str, content: str, workspace_dir: str) -> object:
         message: str
         error: Optional[str] = None
 
-    resolved = os.path.join(workspace_dir, file_path) if not os.path.isabs(file_path) else file_path
+    from .paths import resolve_existing_path
+
+    resolved = resolve_existing_path(file_path, fallback_base=workspace_dir)
     try:
         os.makedirs(os.path.dirname(resolved) or ".", exist_ok=True)
     except OSError as e:
@@ -809,7 +811,9 @@ def _delete_file(target_file: str, workspace_dir: str) -> object:
         message: str
         error: Optional[str] = None
 
-    resolved = os.path.join(workspace_dir, target_file) if not os.path.isabs(target_file) else target_file
+    from .paths import resolve_existing_path
+
+    resolved = resolve_existing_path(target_file, fallback_base=workspace_dir)
     if not os.path.exists(resolved):
         return DeleteResult(success=False, message="", error=f"File not found: {target_file}")
 

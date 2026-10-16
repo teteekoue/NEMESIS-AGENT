@@ -2,6 +2,8 @@ import os
 from dataclasses import dataclass
 from typing import Optional, List
 
+from ..paths import resolve_existing_path
+
 
 @dataclass
 class ListDirInput:
@@ -28,9 +30,11 @@ _MAX_OUTPUT_CHARS = 1_000_000  # 1 Mo - augmente de 10 Ko
 
 
 def list_dir(input: ListDirInput, workspace_dir: str) -> ListDirResult:
-    root = input.path or workspace_dir
-    if not os.path.isabs(root):
-        root = os.path.join(workspace_dir, root)
+    root = (
+        resolve_existing_path(input.path, fallback_base=workspace_dir)
+        if input.path
+        else os.path.abspath(workspace_dir)
+    )
 
     if not os.path.exists(root):
         return ListDirResult(success=False, error=f"Path not found: {input.path or '.'}")

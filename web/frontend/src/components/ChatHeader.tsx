@@ -27,7 +27,7 @@ export function ChatHeader({
   onOpenNav,
 }: {
   onTogglePanel: () => void;
-  onOpenMode: () => void;
+  onOpenMode?: () => void;
   onOpenNav: () => void;
 }) {
   const config = useAppStore((s) => s.config);
@@ -53,6 +53,19 @@ export function ChatHeader({
       : { label: "Connecté", variant: "success" as const, icon: PlugZap, color: "text-emerald-500" };
 
   const modeIsAuto = approvalMode === "all";
+  const modeBadge = (
+    <Badge
+      variant={modeIsAuto ? "success" : "warning"}
+      className="gap-1.5"
+    >
+      {modeIsAuto ? (
+        <ShieldCheck className="h-3 w-3" />
+      ) : (
+        <ShieldQuestion className="h-3 w-3" />
+      )}
+      {modeIsAuto ? "Toutes autorisations" : "Confirmation"}
+    </Badge>
+  );
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-background/80 px-2 backdrop-blur sm:gap-3 sm:px-4">
@@ -85,21 +98,25 @@ export function ChatHeader({
       <TooltipProvider delayDuration={200}>
         <Tooltip>
           <TooltipTrigger asChild>
-            <button type="button" onClick={onOpenMode}>
-              <Badge
-                variant={modeIsAuto ? "success" : "warning"}
-                className="gap-1.5 cursor-pointer transition-opacity hover:opacity-80"
+            {onOpenMode ? (
+              <button
+                type="button"
+                onClick={onOpenMode}
+                className="cursor-pointer transition-opacity hover:opacity-80"
               >
-                {modeIsAuto ? (
-                  <ShieldCheck className="h-3 w-3" />
-                ) : (
-                  <ShieldQuestion className="h-3 w-3" />
-                )}
-                {modeIsAuto ? "Toutes autorisations" : "Confirmation"}
-              </Badge>
-            </button>
+                {modeBadge}
+              </button>
+            ) : (
+              <span>{modeBadge}</span>
+            )}
           </TooltipTrigger>
-          <TooltipContent>Cliquer pour changer le mode d'autorisation de la session</TooltipContent>
+          <TooltipContent>
+            {onOpenMode
+              ? "Cliquer pour changer le mode d'autorisation de la session"
+              : modeIsAuto
+                ? "Toutes les actions sont autorisées automatiquement"
+                : "Confirmation requise avant chaque action à risque"}
+          </TooltipContent>
         </Tooltip>
       </TooltipProvider>
 

@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Union
 
 from ..tool_kind import ToolKind, ToolNamespace
+from ..paths import resolve_existing_path
 
 MAX_NUM_TOKENS = 100_000  # 100k tokens - augmente de 25k
 MAX_LINES_READ = 10_000  # 10k lignes - augmente de 1k
@@ -51,13 +52,8 @@ Usage:
 
 
 def _resolve_path(path_str: str, workspace_dir: str) -> str:
-    """Resolve a path relative to workspace_dir if not absolute, then realpath."""
-    resolved = os.path.join(workspace_dir, path_str) if not os.path.isabs(path_str) else path_str
-    try:
-        resolved = os.path.realpath(resolved)
-    except OSError:
-        pass
-    return resolved
+    """Resolve a path anywhere on the system (workspace only as fallback)."""
+    return resolve_existing_path(path_str, fallback_base=workspace_dir)
 
 
 def _read_single_file(

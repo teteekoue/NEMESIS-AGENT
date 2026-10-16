@@ -7,6 +7,8 @@ import fnmatch
 from dataclasses import dataclass
 from typing import Optional, List
 
+from ..paths import resolve_existing_path
+
 
 @dataclass
 class GlobResult:
@@ -18,8 +20,9 @@ class GlobResult:
 
 DESCRIPTION_FULL = """Find files matching a glob pattern (e.g. **/*.py, src/**/*.ts).
 - Recurses from the given path (default: workspace root).
+- Accepts absolute paths anywhere on the system; relative paths resolve from the current directory.
 - Respects .gitignore when present.
-- Returns paths relative to the workspace when possible."""
+- Returns paths relative to the searched root."""
 
 
 def _load_gitignore_names(root: str) -> set:
@@ -46,13 +49,15 @@ def glob_files(
     if not pattern or not pattern.strip():
         return GlobResult(success=False, files=[], message="pattern is required")
 
-    root = path or workspace_dir
-    if not os.path.isabs(root):
-        root = os.path.join(workspace_dir, root)
+    root = (
+        resolve_existing_path(path, fallback_base=workspace_dir)
+        if path
+        else os.path.abspath(workspace_dir)
+    )
     if not os.path.isdir(root):
         return GlobResult(success=False, files=[], message=f"Path not found: {path or '.'}")
 
-    ignore = _load_gitignore_names(workspace_dir)
+    ignore = _load_gitignore_names(root)
     matches: List[str] = []
     truncated = False
 
@@ -63,7 +68,7 @@ def glob_files(
             if name in ignore:
                 continue
             full = os.path.join(dirpath, name)
-            rel = os.path.relpath(full, workspace_dir)
+            rel = os.path.relpath(full, root)
             # Normalize ** patterns: '**/*.py' should also match top-level '*.py'
             patterns = [pattern]
             if pattern.startswith("**/"):

@@ -7,7 +7,6 @@ import { Composer } from "@/components/Composer";
 import { RightPanel } from "@/components/RightPanel";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { AuthDialog } from "@/components/AuthDialog";
-import { SessionModeDialog } from "@/components/SessionModeDialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/store/useAppStore";
@@ -17,27 +16,14 @@ export default function App() {
   const bootstrap = useAppStore((s) => s.bootstrap);
   const retryBootstrap = useAppStore((s) => s.retryBootstrap);
   const backendOffline = useAppStore((s) => s.backendOffline);
-  const messages = useAppStore((s) => s.messages);
-  const sessionId = useAppStore((s) => s.sessionId);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [panelOpen, setPanelOpen] = React.useState(true);
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [draft, setDraft] = React.useState("");
-  const [modeChosen, setModeChosen] = React.useState(false);
-  const [modeOpen, setModeOpen] = React.useState(false);
 
   React.useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
-
-  const needsMode = messages.length === 0 && !sessionId;
-
-  React.useEffect(() => {
-    if (needsMode) {
-      setModeChosen(false);
-      setModeOpen(true);
-    }
-  }, [needsMode]);
 
   return (
     <TooltipProvider delayDuration={250}>
@@ -68,7 +54,6 @@ export default function App() {
         <main className="flex min-w-0 flex-1 flex-col">
           <ChatHeader
             onTogglePanel={() => setPanelOpen((v) => !v)}
-            onOpenMode={() => setModeOpen(true)}
             onOpenNav={() => setMobileNavOpen(true)}
           />
           {backendOffline && (
@@ -100,13 +85,6 @@ export default function App() {
 
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
         <AuthDialog />
-        <SessionModeDialog
-          open={modeOpen && !modeChosen}
-          onOpenChange={(v) => {
-            setModeOpen(v);
-            if (!v) setModeChosen(true);
-          }}
-        />
       </div>
     </TooltipProvider>
   );

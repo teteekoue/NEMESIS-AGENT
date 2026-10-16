@@ -130,7 +130,27 @@ interface AppState {
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let manualClose = false;
+let pendingSend: string | null = null;
 let msgSeq = 0;
+
+const ACTIVE_SESSION_KEY = "nemesis-active-session";
+
+function rememberActiveSession(id: string | null) {
+  try {
+    if (id) localStorage.setItem(ACTIVE_SESSION_KEY, id);
+    else localStorage.removeItem(ACTIVE_SESSION_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function readActiveSession(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_SESSION_KEY);
+  } catch {
+    return null;
+  }
+}
 
 const uid = () => `m${Date.now().toString(36)}${(msgSeq++).toString(36)}`;
 const now = () => Date.now() / 1000;
@@ -167,7 +187,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   memoryEnabled: true,
   telegram: null,
   github: null,
-  approvalMode: "confirm",
+  approvalMode: "all",
   files: null,
   filePath: "",
   openFile: null,
@@ -193,7 +213,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     manualClose = false;
 
-    get().connectSocket();
+    // Reopen the last active conversation so a page reload (or a backend
+    // restart) resumes where the user left off instead of showing nothing.
+    // openSession() already (re)connects the socket for that session.
+    const restoreId = readActiveSession();
+    if (restoreId) {
+      await get().openSession(restoreId);
+    } else {
+      get().connectSocket();
+    }
+
     const [config] = await Promise.all([
       api.getConfig().catch(() => null),
       get().refreshSessions(),
@@ -248,7 +277,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     const ws = new WebSocket(url);
     socket = ws;
 
-    ws.onopen = () => set({ connected: true, backendOffline: false });
+    ws.onopen = () => {
+      set({ connected: true, backendOffline: false });
+      if (pendingSend) {
+        const payload = pendingSend;
+        pendingSend = null;
+        try {
+          ws.send(payload);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
 
     ws.onclose = () => {
       set({ connected: false, busy: false, pendingAuth: null });
@@ -285,6 +325,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const created = await api.createSession({ model: get().config?.model });
         sid = created.id;
         set({ sessionId: created.id });
+        rememberActiveSession(created.id);
         await get().refreshSessions();
       } catch {
         /* ignore */
@@ -304,13 +345,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
 
+const payload = JSON.stringify({ type: "user_message", content: trimmed });
     if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "user_message", content: trimmed }));
+      socket.send(payload);
     } else {
+      // Socket still connecting/closed: wait for it (or reconnect) then send
+      // instead of silently dropping the user's message.
+      if (!socket || socket.readyState === WebSocket.CLOSED) {
+        reconnect();
+      }
+      pendingSend = payload;
       set((s) => ({
         messages: [
           ...s.messages,
-          { id: uid(), kind: "error", text: "Connexion à l'agent perdue. Reconnexion…", at: now() },
+          { id: uid(), kind: "notice", text: "Connexion à l'agent en cours...", at: now() },
         ],
       }));
     }
@@ -349,7 +397,16 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   newSession: async () => {
     const created = await api.createSession({ model: get().config?.model });
-    set({ sessionId: created.id, messages: [], logs: [], pendingAuth: null, busy: false });
+    set({
+      sessionId: created.id,
+      messages: [],
+      logs: [],
+      pendingAuth: null,
+      busy: false,
+      statusText: "",
+      turnStartedAt: null,
+    });
+    rememberActiveSession(created.id);
     await get().refreshSessions();
     reconnect();
   },
@@ -358,14 +415,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const detail: SessionDetail = await api.getSession(id);
       const messages: ChatMessage[] = (detail.messages || []).map((m, index) => ({
+        ...m,
         id: `s${index}-${Date.now().toString(36)}`,
         at: m.at || detail.updated_at,
-        ...m,
       })) as ChatMessage[];
-      set({ sessionId: id, messages, logs: [], pendingAuth: null, busy: false });
+      set({ sessionId: id, messages, logs: [], pendingAuth: null, busy: false, statusText: "" });
+      rememberActiveSession(id);
       reconnect();
-    } catch {
-      /* ignore */
+    } catch (error) {
+      rememberActiveSession(null);
+      set((state) => ({
+        sessionId: null,
+        messages: [
+          ...state.messages,
+          {
+            id: uid(),
+            kind: "error",
+            text: `Impossible d'ouvrir la conversation : ${(error as Error).message}`,
+            at: now(),
+          },
+        ],
+        pendingAuth: null,
+        busy: false,
+      }));
     }
   },
 
@@ -374,6 +446,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const isCurrent = get().sessionId === id;
     await get().refreshSessions();
     if (isCurrent) {
+      rememberActiveSession(null);
       set({ sessionId: null, messages: [], logs: [] });
       reconnect();
     }
@@ -557,12 +630,26 @@ export const useAppStore = create<AppState>((set, get) => ({
 }));
 
 function reconnect() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   if (socket) {
     manualClose = true;
+    try {
+      socket.onclose = null;
+      socket.onerror = null;
+      socket.onmessage = null;
+    } catch {
+      /* ignore */
+    }
     socket.close();
     socket = null;
   }
-  setTimeout(() => useAppStore.getState().connectSocket(), 60);
+  setTimeout(() => {
+    manualClose = false;
+    useAppStore.getState().connectSocket();
+  }, 60);
 }
 
 function handleEvent(

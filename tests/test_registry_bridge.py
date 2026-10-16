@@ -9,7 +9,7 @@ from src.core.agent_tools import create_registry, build_system_prompt, build_fee
 class TestToolRegistry:
     def test_create_registry(self, tmp_path):
         reg = create_registry(str(tmp_path))
-        assert len(reg) == 23
+        assert len(reg) == 29
         assert "read_file" in reg
         assert "edit" in reg
         assert "bash" in reg
@@ -28,7 +28,7 @@ class TestToolRegistry:
     def test_get_openai_functions(self, tmp_path):
         reg = create_registry(str(tmp_path))
         funcs = reg.get_openai_functions()
-        assert len(funcs) == 23
+        assert len(funcs) == 29
         for f in funcs:
             assert f["type"] == "function"
             assert "name" in f["function"]
@@ -60,7 +60,7 @@ class TestToolBridge:
     def test_create_bridge(self, tmp_path):
         tb = ToolBridge(workspace=str(tmp_path))
         assert tb.get_system_prompt() is not None
-        assert len(tb.get_openai_tools()) == 23
+        assert len(tb.get_openai_tools()) == 29
 
     def test_execute_read_file(self, tmp_path):
         f = tmp_path / "data.txt"

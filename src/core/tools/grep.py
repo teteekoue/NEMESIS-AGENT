@@ -4,6 +4,8 @@ import shutil
 from dataclasses import dataclass
 from typing import Optional, List
 
+from ..paths import resolve_existing_path
+
 
 @dataclass
 class GrepInput:
@@ -48,9 +50,11 @@ def grep(input: GrepInput, workspace_dir: str) -> GrepResult:
 
 
 def _grep_rg(input: GrepInput, workspace_dir: str) -> GrepResult:
-    search_path = input.path or workspace_dir
-    if not os.path.isabs(search_path):
-        search_path = os.path.join(workspace_dir, search_path)
+    search_path = (
+        resolve_existing_path(input.path, fallback_base=workspace_dir)
+        if input.path
+        else os.path.abspath(workspace_dir)
+    )
 
     args = ["rg", "--no-heading", "--with-filename", "--line-number", "--color=never"]
 
@@ -119,9 +123,11 @@ def _grep_rg(input: GrepInput, workspace_dir: str) -> GrepResult:
 def _grep_fallback(input: GrepInput, workspace_dir: str) -> GrepResult:
     import re as regex
 
-    search_path = input.path or workspace_dir
-    if not os.path.isabs(search_path):
-        search_path = os.path.join(workspace_dir, search_path)
+    search_path = (
+        resolve_existing_path(input.path, fallback_base=workspace_dir)
+        if input.path
+        else os.path.abspath(workspace_dir)
+    )
 
     try:
         pattern = regex.compile(
@@ -157,7 +163,7 @@ def _grep_fallback(input: GrepInput, workspace_dir: str) -> GrepResult:
                 if fn.startswith("."):
                     continue
                 fp = os.path.join(root, fn)
-                rel = os.path.relpath(fp, workspace_dir)
+                rel = os.path.relpath(fp, search_path)
                 if not should_skip(rel, root):
                     files.append(fp)
 
@@ -166,7 +172,7 @@ def _grep_fallback(input: GrepInput, workspace_dir: str) -> GrepResult:
             with open(filepath, "r", encoding="utf-8", errors="replace") as f:
                 for line_num, line in enumerate(f, 1):
                     if pattern.search(line):
-                        rel_path = os.path.relpath(filepath, workspace_dir)
+                        rel_path = os.path.relpath(filepath, search_path)
                         if input.mode == "files_with_matches":
                             if rel_path not in results:
                                 results.append(rel_path)

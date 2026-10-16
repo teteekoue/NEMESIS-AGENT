@@ -21,10 +21,10 @@ class ApplyPatchResult:
             self.files_touched = []
 
 
-DESCRIPTION_FULL = """Apply a unified diff (patch) to the workspace.
+DESCRIPTION_FULL = """Apply a unified diff (patch) anywhere on the system.
 - Prefer this for multi-hunk or multi-file edits in one step.
 - The patch must be valid unified diff format (--- / +++ / @@).
-- Paths inside the patch are resolved relative to the workspace."""
+- Relative paths inside the patch resolve from the current directory; absolute paths are honored."""
 
 
 def apply_patch(patch: str, workspace_dir: str, dry_run: bool = False) -> ApplyPatchResult:
@@ -53,7 +53,7 @@ def apply_patch(patch: str, workspace_dir: str, dry_run: bool = False) -> ApplyP
             cmd.insert(1, "--dry-run")
         proc = subprocess.run(
             cmd,
-            cwd=workspace_dir,
+            cwd=os.getcwd(),
             capture_output=True,
             text=True,
             timeout=60,
@@ -64,7 +64,7 @@ def apply_patch(patch: str, workspace_dir: str, dry_run: bool = False) -> ApplyP
             cmd0 = ["patch", "-p0", "--forward", "--no-backup-if-mismatch", "-i", patch_path]
             if dry_run:
                 cmd0.insert(1, "--dry-run")
-            proc0 = subprocess.run(cmd0, cwd=workspace_dir, capture_output=True, text=True, timeout=60)
+            proc0 = subprocess.run(cmd0, cwd=os.getcwd(), capture_output=True, text=True, timeout=60)
             out0 = (proc0.stdout or "") + (proc0.stderr or "")
             if proc0.returncode != 0:
                 return ApplyPatchResult(

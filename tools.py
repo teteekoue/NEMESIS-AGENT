@@ -27,8 +27,9 @@ class ActionExecutor:
         self._waiting_for_input = None
 
     def resolve_path(self, path):
-        p = Path(path.strip())
-        return p.resolve() if p.is_absolute() else (self.workspace_root / p).resolve()
+        raw = os.path.expanduser(str(path).strip())
+        p = Path(raw)
+        return p.resolve() if p.is_absolute() else (Path.cwd() / p).resolve()
 
     # =====================================================================
     # NOUVEAU DISPATCH JSON
