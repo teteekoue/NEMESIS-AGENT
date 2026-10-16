@@ -35,6 +35,27 @@ export interface PublicConfig {
   };
 }
 
+export interface SubagentProfile {
+  id: string;
+  name: string;
+  provider: "groq" | "openai" | "custom";
+  base_url: string;
+  model: string;
+  api_key_set: boolean;
+  api_key_from_env: boolean;
+  api_key_env_name: string;
+}
+
+export interface SubagentsConfig {
+  profiles: SubagentProfile[];
+  profile_count: number;
+  max_concurrent: number;
+  max_iterations: number;
+  timeout_seconds: number;
+  max_retries: number;
+  max_tokens_per_task: number;
+}
+
 export interface McpServer {
   name: string;
   command: string;
@@ -48,7 +69,8 @@ export interface SkillInfo {
   description: string;
   version: string;
   has_skill_md: boolean;
-  path: string;
+  enabled: boolean;
+  source: string;
 }
 
 export interface MemoryBlock {
@@ -164,6 +186,34 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+  getSubagentsConfig: () => request<SubagentsConfig>("/api/subagents"),
+  saveSubagentProfile: (payload: {
+    id?: string;
+    name: string;
+    provider: string;
+    base_url: string;
+    model: string;
+    api_key?: string;
+  }) =>
+    request<SubagentsConfig>("/api/subagents/profiles", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  deleteSubagentProfile: (id: string) =>
+    request<SubagentsConfig>(`/api/subagents/profiles/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  saveSubagentsConfig: (payload: {
+    max_concurrent: number;
+    max_iterations: number;
+    timeout_seconds: number;
+    max_retries: number;
+    max_tokens_per_task: number;
+  }) =>
+    request<SubagentsConfig>("/api/subagents", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
   getModels: () => request<ModelsResponse>("/api/models"),
   chooseModel: (model: string) =>
     request<{ ok: boolean; model: string }>("/api/models", {
@@ -211,6 +261,16 @@ export const api = {
       method: "DELETE",
     }),
   getSkills: () => request<{ skills: SkillInfo[] }>("/api/skills"),
+  setSkillEnabled: (name: string, enabled: boolean) =>
+    request<{ skills: SkillInfo[] }>("/api/skills", {
+      method: "PUT",
+      body: JSON.stringify({ name, enabled }),
+    }),
+  importSkill: (payload: { filename?: string; content?: string; url?: string }) =>
+    request<{ skills: SkillInfo[]; message: string; source?: string }>("/api/skills/import", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   getMemory: () => request<MemoryState>("/api/memory"),
   upsertMemory: (payload: {
     id?: string;

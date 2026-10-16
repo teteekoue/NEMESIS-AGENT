@@ -121,7 +121,8 @@ Le routage SPA est géré : toute route inconnue (hors `/api` et `/ws`) renvoie 
 - **Terminal PTY réel** intégré (xterm.js).
 - **Explorateur de fichiers** du workspace (lecture seule dans l'UI, écriture via l'agent).
 - **Sessions** persistantes, reprises après rechargement, renommage automatique.
-- **Réglages complets** répartis en onglets.
+- **Réglages complets** dans une navigation latérale avec panneau dédié par rubrique.
+- **Sous-agents éphémères** : profils API multiples, clés masquées, équilibrage par profil, reprise des 429 et budget par tâche.
 - **Bascule de thème** clair/sombre persistée.
 
 ---
@@ -166,6 +167,10 @@ Base : `/api`. Toutes les réponses sont en JSON.
 | GET  | `/api/health` | État du service |
 | GET  | `/api/config` | Configuration publique (sans secrets) |
 | PATCH| `/api/config` | Mise à jour (provider / nemapi / security) |
+| GET  | `/api/subagents` | Réglages des sous-agents, sans clé API |
+| PUT  | `/api/subagents` | Enregistre les limites de la flotte |
+| POST | `/api/subagents/profiles` | Ajoute ou modifie un profil fournisseur |
+| DELETE | `/api/subagents/profiles/{id}` | Supprime un profil fournisseur |
 | GET  | `/api/models` | Modèles disponibles + état de connexion |
 | POST | `/api/models` | Choix du modèle |
 | GET  | `/api/tools` | Catalogue des outils (nom, description, risque) |
@@ -175,9 +180,26 @@ Base : `/api`. Toutes les réponses sont en JSON.
 | Méthode | Route | Description |
 | ------- | ----- | ----------- |
 | GET    | `/api/mcp` | Liste des serveurs MCP |
-| POST   | `/api/mcp` | Ajoute un serveur MCP |
+| POST   | `/api/mcp` | Ajoute un serveur MCP (commande, arguments et variables d'environnement) |
 | DELETE | `/api/mcp/{name}` | Supprime un serveur MCP |
-| GET    | `/api/skills` | Liste les skills installées |
+| GET    | `/api/skills` | Liste les skills installées et leur activation |
+| PUT    | `/api/skills` | Active/désactive un skill pour les nouvelles conversations |
+| POST   | `/api/skills/import` | Importe un fichier `SKILL.md` ou une URL GitHub autorisée |
+
+Les skills intégrées (brainstorming, design frontend, Git, diagnostic et
+vérification) sont désactivées par défaut. Une skill activée est ajoutée au
+prompt de la première requête d'une nouvelle conversation, sans requête
+supplémentaire au provider. L'import GitHub accepte uniquement les URL HTTPS
+`github.com/.../blob/.../SKILL.md` et `raw.githubusercontent.com/.../SKILL.md` ;
+seul le fichier Markdown est lu, son contenu n'est pas exécuté. Les skills
+peuvent aussi être importées depuis un `SKILL.md` local de 200 Ko maximum.
+Les descriptions intégrées sont originales et s'inspirent des projets
+[obra/superpowers](https://github.com/obra/superpowers) (MIT) et
+[anthropics/skills](https://github.com/anthropics/skills) (Apache-2.0).
+
+Les valeurs d'environnement des serveurs MCP sont stockées dans
+`mcp_config.yaml` avec des permissions `0600`; l'API et l'interface ne
+renvoient que les noms de variables, jamais leurs valeurs.
 
 ### Mémoire
 
@@ -263,16 +285,17 @@ Messages serveur → client : `{ "type": "output", "data": "..." }`, `{ "type": 
 
 ## Réglages
 
-La boîte de dialogue **Réglages** comporte 8 onglets :
+La boîte de dialogue **Réglages** utilise une barre de navigation latérale et comporte 9 rubriques :
 
 1. **Connexion** — serveur NEMAPI local (hôte/port) ou URL publique, sélection du modèle, test de connexion.
 2. **Général** — workspace, auto-approbation des lectures, confirmation des actions à risque, affichage des sorties.
-3. **Mémoire** — activation, ajout/édition/suppression de blocs (voir [MEMORY.md](MEMORY.md)).
-4. **MCP** — ajout/suppression de serveurs MCP (commande + args + env).
-5. **Skills** — skills installées dans `tools_library/`.
-6. **Outils** — catalogue complet avec niveau de risque.
-7. **GitHub** — connexion (voir [GITHUB.md](GITHUB.md)).
-8. **Telegram** — token du bot (partagé avec `telegram_bot.py`).
+3. **Sous-agents** — profils API avec secrets masqués, suppression individuelle, concurrence, retries 429 et budget tokens.
+4. **Mémoire** — activation, ajout/édition/suppression de blocs (voir [MEMORY.md](MEMORY.md)).
+5. **MCP** — ajout/suppression de serveurs MCP (commande + args + env).
+6. **Skills** — skills installées dans `tools_library/`.
+7. **Outils** — catalogue complet avec niveau de risque.
+8. **GitHub** — connexion (voir [GITHUB.md](GITHUB.md)).
+9. **Telegram** — token du bot (partagé avec `telegram_bot.py`).
 
 ---
 

@@ -500,16 +500,6 @@ class NemesisApp:
             extra_tools = set(self.executor.registry._tools.keys())
             self.parser = ActionParser(extra_valid_tools=extra_tools)
         
-        # Passer l'exécuteur au scheduler A2A pour les subagents
-        from src.core.agent_manager import get_scheduler
-        scheduler = get_scheduler()
-        scheduler.set_executor(self.executor)
-        
-        # Recharger les agents avec l'exécuteur maintenant disponible
-        # Les agents chargés depuis agents.json avant que l'exécuteur ne soit créé n'avaient pas d'exécuteur
-        from src.core.default_commands import reload_agents_with_executor
-        reload_agents_with_executor(self.executor)
-        
         src.core.default_commands.set_active_app(self)
 
         self.console.clear()

@@ -2,7 +2,7 @@
 
 ## Vue d'ensemble
 
-NEMESIS est un agent de codage autonome en CLI, spécialisé dans l'ingénierie logicielle et l'administration système sur Linux. Il utilise une architecture modulaire avec des providers LLM, des outils système et un système de subagents via le protocole A2A.
+NEMESIS est un agent autonome de codage et d'administration Linux. Il utilise un provider NEMAPI pour l'agent principal et un provider OpenAI-compatible distinct pour créer des sous-agents éphémères en parallèle.
 
 ## Architecture
 
@@ -12,8 +12,8 @@ NEMESIS est un agent de codage autonome en CLI, spécialisé dans l'ingénierie 
 - **`cli.py`** : Interface coding-agent alternative (même moteur)
 - **`telegram_bot.py`** : Bot Telegram (même moteur, mémoire partagée)
 - **`web/`** : Interface Web — backend FastAPI (`web/backend/`) + frontend React (`web/frontend/`)
-- **`providers/`** : Provider NEMAPI unique, avec contexte conservé côté serveur
-- **`src/core/`** : Logique métier (outils, commandes, A2A, MCP, mémoire, GitHub)
+- **`providers/`** : Provider NEMAPI pour l'agent principal
+- **`src/core/`** : Logique métier (outils, flotte éphémère, MCP, mémoire, GitHub)
 - **`src/ui/`** : Interface utilisateur avec Rich
 - **`tools/`** : Outils système et exécuteur
 
@@ -33,22 +33,17 @@ le **même prompt système** (`build_system_prompt`) et la **même mémoire pers
 
 | Provider | Description |
 |----------|-------------|
-| `nemapi` | Provider unique NEMAPI, contexte serveur et modèles via `/v1/models` |
+| `nemapi` | Provider principal NEMAPI, contexte serveur et modèles via `/v1/models` |
 
-### Subagents (A2A)
+### Sous-agents éphémères
 
-Le système de subagents utilise le protocole A2A (Agent-to-Agent) pour la délégation de tâches.
+Les outils `delegate_tasks` et `subagent_status` coordonnent des tâches temporaires indépendantes, exécutées simultanément via une API OpenAI-compatible. Chaque worker a un historique de tâche complet envoyé à chaque requête et le même registre d'outils NEMESIS, sans possibilité de délégation récursive. Les workers disparaissent après leur tâche ; leurs rapports restent temporairement en mémoire.
 
 **Fichiers clés :**
-- `src/core/agent_manager.py` : Gestion des subagents
-- `src/core/a2a_protocol.py` : Protocole A2A
-- `agents.json` : Configuration des subagents
-
-**Subagent actuel :**
-- Nom : Agent1
-- Provider : nemapi
-- Modèle : sélectionné depuis `/v1/models`
-- Statut : outils exécutés par le bridge partagé
+- `src/core/subagents.py` : flotte, exécution concurrente, historique et statuts
+- `src/core/tool_bridge.py` et `src/core/agent_tools.py` : outils locaux partagés et coordination
+- `~/.config/nemesis-cli/config.yaml` : provider et paramètres sous la clé `subagents`
+- `docs/SUBAGENTS.md` : configuration et fonctionnement
 
 ## État technique
 
@@ -57,10 +52,10 @@ Le système de subagents utilise le protocole A2A (Agent-to-Agent) pour la dél�
   avec le premier message utilisateur (`system_prefix`) pour ne consommer qu'un
   seul aller-retour provider au démarrage d'une session. Ce comportement est
   appliqué au CLI, au bot Telegram et au Web.
-- Les appels d'outils sont exécutés par le bridge partagé, pour l'agent
-  principal comme pour les sous-agents.
+- Les sous-agents exécutent localement les mêmes outils que le bridge principal ; en Web, le mode Confirmation s'applique aussi à leurs actions à risque.
 - Le contexte conversationnel reste côté serveur NEMAPI ; aucun historique
   complet n'est reconstruit côté client.
+- Les requêtes de sous-agents, contrairement à NEMAPI, incluent l'historique complet OpenAI-compatible à chaque appel.
 - La mémoire persistante est ajoutée au prompt système lorsque l'option est
   activée (partagée par toutes les surfaces).
 
@@ -81,10 +76,9 @@ security:
   workspace: ./workspace
 ```
 
-### agents.json
+### Sous-agents
 
-Les sous-agents utilisent la même instance NEMAPI et le même contexte serveur
-que l'agent principal. Aucun token de fournisseur n'est requis par NEMESIS.
+Configurer le provider, l'URL, le modèle, la clé API et la limite de concurrence dans Réglages Web → Sous-agents. La clé Groq peut aussi être fournie par `GROQ_API_KEY`. Voir [docs/SUBAGENTS.md](docs/SUBAGENTS.md).
 
 ## Commandes disponibles
 
@@ -95,8 +89,8 @@ que l'agent principal. Aucun token de fournisseur n'est requis par NEMESIS.
 | `/config` | Configure l'URL et le port du serveur NEMAPI |
 | `/models` | Liste et sélectionne un modèle officiel, ou saisie manuelle |
 | `/stats` | Statistiques de session |
-| `/agents` | Gestion des subagents |
-| `/delegate <agent> <instruction>` | Délègue une tâche |
+| `/agents` | Rappel du fonctionnement éphémère |
+| `/delegate <instruction>` | Crée une tâche éphémère |
 | `/tools` | Liste des outils disponibles |
 | `/show` | Affiche les sorties cachées |
 
@@ -127,8 +121,7 @@ que l'agent principal. Aucun token de fournisseur n'est requis par NEMESIS.
 
 - Le projet utilise Python 3.10+
 - L'interface utilisateur utilise la bibliothèque `rich`
-- Le protocole A2A est basé sur JSON
-- Les subagents sont configurés via `agents.json`
+- Les sous-agents utilisent une API OpenAI-compatible et sont configurés dans `config.yaml`
 - Node.js 18+ est requis pour l'interface Web et le serveur MCP GitHub
 
 ---

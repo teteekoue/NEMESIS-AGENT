@@ -71,8 +71,31 @@ def ensure_user_dirs() -> Path:
             user_lib.mkdir(parents=True, exist_ok=True)
     elif not user_lib.exists():
         user_lib.mkdir(parents=True, exist_ok=True)
+    if install_lib and install_lib.is_dir():
+        _seed_bundled_skills(install_lib, user_lib)
     _DIRS_ENSURED = True
     return USER_CONFIG_DIR
+
+
+def _seed_bundled_skills(source: Path, destination: Path) -> None:
+    """Copy package-provided skills into existing user libraries without overwriting."""
+    try:
+        for skill_dir in source.iterdir():
+            skill_file = skill_dir / "SKILL.md"
+            if not skill_dir.is_dir() or not skill_file.is_file():
+                continue
+            try:
+                content = skill_file.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            frontmatter = content.split("---", 2)
+            if len(frontmatter) != 3 or "nemesis_builtin: true" not in frontmatter[1]:
+                continue
+            target = destination / skill_dir.name
+            if not target.exists():
+                shutil.copytree(skill_dir, target)
+    except OSError:
+        pass
 
 
 def _seed_if_missing(name: str) -> None:

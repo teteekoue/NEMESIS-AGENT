@@ -76,6 +76,7 @@ tools.py                     Exécuteur d'outils principal
 tools_schema.py              Schéma des outils (42)
 src/core/
   agent_tools.py             Registre unifié + prompt système + outils mémoire
+  subagents.py               Flotte temporaire parallèle (API OpenAI-compatible)
   memory_store.py            Mémoire persistante (prefs + blocs)
   github_settings.py         Connexion GitHub + sync serveur MCP
   mcp_manager.py             Gestionnaire MCP (pool de clients)
@@ -90,6 +91,7 @@ web/
   frontend/                  React + Vite (src/components, src/store, src/lib)
   start.sh                   Lancement dev backend + frontend
 docs/                        WEB_UI, MEMORY, GITHUB, CHANGELOG
+docs/SUBAGENTS.md            Configuration et coordination des sous-agents
 ```
 
 **Données utilisateur** (partagées par toutes les surfaces) :
@@ -116,6 +118,10 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
 - **Pool de clients MCP** (`_ClientPool` dans `src/core/mcp_manager.py`) : évite le coût de
   démarrage `npx`/`uvx` à chaque appel. Utiliser `get_client`/`release_client`, ne pas `close()`.
 - **Token GitHub jamais renvoyé au frontend** (aperçu masqué).
+- **Sous-agents éphémères** : `delegate_tasks` crée des workers concurrents via API OpenAI-compatible ;
+  `subagent_status` suit leurs rapports en mémoire. Ils partagent les outils NEMESIS, sans identité
+  persistante ni délégation récursive. Le provider et sa clé sont configurés sous `subagents` dans
+  `config.yaml` ; les routes Web ne renvoient jamais la clé.
 - **Pas de conversation fictive par défaut** : le mock n'est chargé qu'avec `?demo=1`.
   Backend injoignable → bandeau « Backend injoignable » + bouton Réessayer.
 - **Thème** : clair (blanc-bleu) par défaut, sombre (bleu nuit) ; persisté dans `localStorage("nemesis-theme")`.

@@ -248,7 +248,7 @@ def about_command(args=None):
         ("L'agent autonome de codage et d'administration Linux.\n\n", "italic white"),
         ("Provider : ", "dim"), ("NEMAPI\n", "bold white"),
         ("Modèles : ", "dim"), ("récupérés via /v1/models\n", "white"),
-        ("Interface : ", "dim"), ("outils batch, Todo, subagents A2A", "white"),
+        ("Interface : ", "dim"), ("outils batch, Todo, sous-agents éphémères", "white"),
     )
     console.print(Panel(text, border_style="bright_blue", expand=False))
 
@@ -308,9 +308,8 @@ def tools_command(args=None):
         ("mcp_list", "Liste des serveurs MCP configures"),
         ("mcp_tools_list", "Decouverte des outils d'un serveur MCP"),
         ("mcp_call", "Appel d'un outil MCP"),
-        ("list_agents", "Liste des agents subordonnes A2A"),
-        ("delegate_task", "Delegation A2A a un agent subordonne"),
-        ("check_reports", "Rapports des taches A2A terminees"),
+        ("delegate_tasks", "Lancement de tâches indépendantes en parallèle"),
+        ("subagent_status", "Suivi et résultats des tâches temporaires"),
     ]
     
     # Créer un tableau plus élégant
@@ -335,24 +334,6 @@ def tools_command(args=None):
 
 
 from src.core.mcp_manager import MCPManager
-from src.core.agent_manager import AgentClient, A2AAgentClient, get_scheduler, A2ATaskScheduler
-from src.core.a2a_protocol import (
-    A2AEnvelope, A2AMessageType, TaskPriority,
-    AgentCapability, TaskManifest,
-)
-
-def _agents_file() -> Path:
-    try:
-        from src.core.paths import agents_path
-        return agents_path()
-    except Exception:
-        return Path("agents.json")
-
-
-AGENTS_FILE = _agents_file()
-ACTIVE_AGENTS: Dict[str, AgentClient] = {}
-
-
 def _make_mcp_mgr() -> MCPManager:
     try:
         from src.core.paths import mcp_config_path
@@ -362,7 +343,6 @@ def _make_mcp_mgr() -> MCPManager:
 
 
 mcp_mgr = _make_mcp_mgr()
-a2a_scheduler = get_scheduler()
 
 
 @registry.register("mcp", "Gere les serveurs MCP")
@@ -404,252 +384,40 @@ def mcp_command(args=None):
             console.print(f"[success]{msg}[/success]" if ok else f"[error]{msg}[/error]")
 
 
-def load_agents():
-    agents_file = _agents_file()
-    if agents_file.exists():
-        try:
-            with open(agents_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for name, info in data.items():
-                    if isinstance(info, str):
-                        info = {"api_key": info}
-                    agent = AgentClient.from_config(name, info)
-                    ACTIVE_AGENTS[name] = agent
-                    a2a_scheduler.register_agent_client(agent)
-        except Exception as e:
-            console.print(f"[error]Erreur chargement agents : {e}[/error]")
-    # Propager l'exécuteur à tous les agents après le chargement
-    if a2a_scheduler._executor:
-        for agent in ACTIVE_AGENTS.values():
-            agent.set_executor(a2a_scheduler._executor)
-
-def save_agents():
-    data = {name: ag.to_config() for name, ag in ACTIVE_AGENTS.items()}
-    agents_file = _agents_file()
-    agents_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(agents_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-def reload_agents_with_executor(executor):
-    """Propager l'exécuteur à tous les agents déjà chargés."""
-    for agent in ACTIVE_AGENTS.values():
-        agent.set_executor(executor)
-    # Mettre à jour le scheduler également
-    a2a_scheduler.set_executor(executor)
-
-load_agents()
-
-
-@registry.register("delegate", "Delegue une tache a un coequipier A2A en arriere-plan (usage: /delegate <nom_agent> <instruction>)")
+@registry.register("delegate", "Crée un sous-agent temporaire pour une instruction")
 def delegate_command(args=None):
-    """Délègue une tâche à un coéquipier A2A — non bloquant."""
-    if not args or len(args) < 2:
-        console.print("[yellow]Usage: /delegate <nom_agent> <instruction>[/yellow]")
-        console.print("[dim]Exemple: /delegate mon_agent 'Écris un fichier test.py avec print(\"Hello\")'[/dim]")
-        console.print("[dim]La délégation est asynchrone: NEMESIS n'attend pas la fin. Utilisez /agent_status ou check_reports.[/dim]")
+    """Crée une tâche éphémère avec la flotte configurée."""
+    instruction = " ".join(args or []).strip()
+    fleet = getattr(getattr(_active_app, "executor", None), "subagent_fleet", None)
+    if not instruction or fleet is None:
+        console.print("[yellow]Usage: /delegate <instruction>[/yellow]")
+        console.print("[dim]Configurez le provider des sous-agents dans config.yaml ou Réglages Web.[/dim]")
         return
-
-    agent_name = args[0]
-    instruction = " ".join(args[1:])
-
-    if agent_name not in ACTIVE_AGENTS:
-        console.print(f"[error]Agent '{agent_name}' introuvable. Utilisez /agents pour en créer un.[/error]")
-        return
-
-    agent = ACTIVE_AGENTS[agent_name]
-
-    if not agent._executor:
-        console.print(f"[yellow]L'agent '{agent_name}' n'a pas d'exécuteur. Tentative de réparation...[/yellow]")
-        if a2a_scheduler._executor:
-            agent.set_executor(a2a_scheduler._executor)
-            console.print("[success]Exécuteur propagé.[/success]")
-        else:
-            console.print("[error]Aucun exécuteur disponible. Redémarrez NEMESIS.[/error]")
-            return
-
-    if agent_name not in a2a_scheduler.agents:
-        a2a_scheduler.register_agent_client(agent)
-
-    if getattr(agent, "status", "idle") == "busy":
-        console.print(
-            f"[yellow]Agent '{agent_name}' déjà occupé "
-            f"(task={getattr(agent, '_current_task_id', '?')}).[/yellow]"
-        )
-        return
-
-    console.print(f"[system]Délégation asynchrone → '{agent_name}'...[/system]")
-    console.print(f"[dim]Instruction: {instruction}[/dim]")
-
-    try:
-        task_id = a2a_scheduler.delegate(
-            agent_name=agent_name,
-            label=instruction[:60],
-            description=instruction,
-            instructions=[instruction],
-            blocking=False,
-        )
-        if not task_id:
-            console.print("[error]Délégation refusée (agent occupé ou injoignable).[/error]")
-            return
-        reports_dir = getattr(a2a_scheduler, "_reports_dir", None) or "workspace/a2a_reports"
-        console.print("[success]Délégation acceptée — travail en arrière-plan.[/success]")
-        console.print(f"  task_id : [bold]{task_id}[/bold]")
-        console.print(f"  rapport : {reports_dir}/{task_id}.md (écrit à la fin)")
-        console.print("[dim]NEMESIS n'est pas bloqué. /agent_status ou outil agent_status / check_reports.[/dim]")
-    except Exception as e:
-        console.print(f"[error]Erreur lors de la délégation: {e}[/error]")
-        import traceback
-        console.print(f"[dim]{traceback.format_exc()}[/dim]")
+    result = fleet.delegate([{"instruction": instruction}])
+    if result.get("success"):
+        console.print(f"[success]Tâche lancée : {result['tasks'][0]['task_id']}[/success]")
+    else:
+        console.print(f"[error]{result.get('error', 'Échec de la délégation.')}[/error]")
 
 
-@registry.register("agent_status", "Statut des coequipiers A2A et des taches async (usage: /agent_status [task_id])")
+@registry.register("agent_status", "Statut des tâches de sous-agents temporaires")
 def agent_status_command(args=None):
-    """Affiche le statut des agents et des jobs A2A."""
+    """Affiche l'état des tâches de sous-agents retenues en mémoire."""
     task_id = (args[0] if args else "") or ""
-    try:
-        from src.core.agent_tools import _agent_status
-        out = _agent_status(task_id=task_id) if task_id else _agent_status()
-        console.print(out.get("stdout", ""))
-    except Exception as e:
-        console.print(f"[error]{e}[/error]")
+    fleet = getattr(getattr(_active_app, "executor", None), "subagent_fleet", None)
+    if fleet is None:
+        console.print("[yellow]Flotte de sous-agents indisponible.[/yellow]")
+        return
+    console.print(json.dumps(fleet.status(task_id), ensure_ascii=False, indent=2))
 
 
-@registry.register("agents", "Gere les agents subordonnes (A2A) pour deleguer des taches")
+@registry.register("agents", "Explique le fonctionnement des sous-agents temporaires")
 def agents_command(args=None):
-    while True:
-        console.print("\n[bold magenta]Gestion des Agents Subordonnes (A2A · NemAPI v3)[/bold magenta]")
-        console.print(f"Agents : {', '.join(ACTIVE_AGENTS.keys()) if ACTIVE_AGENTS else 'Aucun'}")
-        console.print("\n1. Ajouter un agent")
-        console.print("2. Chat interactif avec un agent (mode A2A)")
-        console.print("3. Supprimer un agent")
-        console.print("4. Sonder les capacites A2A d'un agent")
-        console.print("q. Retour")
-
-        choice = console.input("\nChoix > ").strip().lower()
-        if choice == "1":
-            from src.core.agent_manager import NEMAPI_V3_DEFAULT_MODEL, NEMAPI_V3_DEFAULT_HOST, NEMAPI_V3_DEFAULT_PORT
-            name = console.input("Nom de l'agent : ").strip()
-            if not name:
-                console.print("[error]Nom requis.[/error]")
-                continue
-            # A2A: NemAPI v3 only
-            provider = "nemapi"
-            console.print("[dim]Provider: NEMAPI uniquement — les modèles sont récupérés depuis /v1/models[/dim]")
-            model = console.input(f"Modele (optionnel) [{NEMAPI_V3_DEFAULT_MODEL}] : ").strip() or NEMAPI_V3_DEFAULT_MODEL
-            host = console.input(f"Host [{NEMAPI_V3_DEFAULT_HOST}] : ").strip() or NEMAPI_V3_DEFAULT_HOST
-            port_s = console.input(f"Port [{NEMAPI_V3_DEFAULT_PORT}] : ").strip() or str(NEMAPI_V3_DEFAULT_PORT)
-            try:
-                port = int(port_s)
-            except ValueError:
-                port = NEMAPI_V3_DEFAULT_PORT
-            agent = AgentClient(
-                name=name,
-                api_key="nemapi",
-                provider=provider,
-                model=model,
-                host=host,
-                port=port,
-            )
-            ACTIVE_AGENTS[name] = agent
-            a2a_scheduler.register_agent_client(agent)
-            # Optional capability probe
-            try:
-                manifest = agent.query_capabilities()
-                if manifest:
-                    console.print(f"[dim]Capabilities: {[c.value for c in manifest.capabilities]}[/dim]")
-            except Exception as e:
-                console.print(f"[dim]Capability probe skipped: {e}[/dim]")
-            save_agents()
-            console.print(
-                f"[success]Agent '{name}' ajoute "
-                f"(provider={provider}, model={agent.model}) et enregistre A2A.[/success]"
-            )
-        elif choice == "2":
-            name = console.input("Nom de l'agent : ").strip()
-            if name not in ACTIVE_AGENTS:
-                console.print("[error]Agent inconnu.[/error]")
-                continue
-            agent = ACTIVE_AGENTS[name]
-            console.print(f"[system]Mode A2A avec {name} (tapez 'q' pour quitter).[/system]")
-            console.print("[dim]Les messages sont envoyes sous forme d'enveloppes A2A.[/dim]")
-            while True:
-                user_msg = console.input(f"\n[user] {name} > [/user]")
-                if user_msg == "q":
-                    break
-
-                # Detecter les commandes speciales A2A
-                if user_msg.startswith("/capability"):
-                    env = A2AEnvelope.create("nemesis", name, A2AMessageType.CAPABILITY_QUERY, {})
-                    console.print(f"[dim]→ Envoi A2A: {env.type.value}[/dim]")
-                    response = agent.send_message(env.to_json())
-                    # Try to parse A2A response
-                    parsed = agent._parse_a2a_response(response)
-                    if parsed:
-                        console.print(f"\n[ai] {name} (A2A {parsed.type.value}) :[/ai]")
-                        from rich.json import JSON
-                        console.print(JSON(json.dumps(parsed.payload, ensure_ascii=False, default=str)))
-                    else:
-                        console.print(f"\n[ai] {name} :[/ai]\n{response}")
-                elif user_msg.startswith("/heartbeat"):
-                    env = A2AEnvelope.create("nemesis", name, A2AMessageType.HEARTBEAT, {})
-                    console.print(f"[dim]→ Envoi A2A: heartbeat[/dim]")
-                    agent.send_message(env.to_json())
-                    # Peut aussi envoyer en texte direct
-                    response = agent.send_message("HEARTBEAT")
-                    console.print(f"\n[ai] {name} :[/ai]\n{response}")
-                else:
-                    # Chat enveloppe A2A standard
-                    env = A2AEnvelope.create("nemesis", name, A2AMessageType.TASK_ASSIGN, {
-                        "task_id": f"chat-{int(time.time())}",
-                        "label": "Chat message",
-                        "description": user_msg,
-                        "instructions": [user_msg],
-                    })
-                    console.print(f"[dim]→ Envoi A2A: task_assign[/dim]")
-                    response = agent.send_message(env.to_json())
-
-                    # Parse and display A2A response
-                    parsed = agent._parse_a2a_response(response)
-                    if parsed:
-                        console.print(f"\n[ai] {name} (A2A {parsed.type.value}) :[/ai]")
-                        from rich.json import JSON
-                        console.print(JSON(json.dumps(parsed.payload, ensure_ascii=False, default=str)))
-                        # If it's a task_report with artifacts, show them
-                        if parsed.type == A2AMessageType.TASK_REPORT:
-                            artifacts = parsed.payload.get("artifacts", [])
-                            if artifacts:
-                                console.print("\n[bold cyan]Artifacts produits:[/bold cyan]")
-                                for a in artifacts:
-                                    console.print(f"   {a['path']} — {a.get('description', '')}")
-                    else:
-                        console.print(f"\n[ai] {name} :[/ai]\n{response}")
-        elif choice == "3":
-            name = console.input("Nom a supprimer : ").strip()
-            if name in ACTIVE_AGENTS:
-                del ACTIVE_AGENTS[name]
-                a2a_scheduler.remove_agent(name)
-                save_agents()
-                console.print("[success]Supprime.[/success]")
-        elif choice == "4":
-            name = console.input("Nom de l'agent : ").strip()
-            if name not in ACTIVE_AGENTS:
-                console.print("[error]Agent inconnu.[/error]")
-                continue
-            agent = ACTIVE_AGENTS[name]
-            console.print(f"[system]Sondage des capacites A2A de {name}...[/system]")
-            manifest = agent.query_capabilities()
-            if manifest:
-                console.print(f"\n[bold green]Manifest A2A — {manifest.name}[/bold green]")
-                console.print(f"  Version: {manifest.version}")
-                console.print(f"  Description: {manifest.description}")
-                console.print(f"  Modele: {manifest.model}")
-                console.print(f"  Capacites: {', '.join(c.value for c in manifest.capabilities)}")
-                console.print(f"  Domaines: {', '.join(manifest.domains)}")
-                console.print(f"  Taches concurrentes max: {manifest.max_concurrent_tasks}")
-            else:
-                console.print("[yellow]L'agent n'a pas repondu au protocole A2A. Verifiez son prompt.[/yellow]")
-        elif choice == "q":
-            break
+    console.print(
+        "[system]Les sous-agents sont créés à la demande et disparaissent à la fin de leur tâche. "
+        "Configurez leur provider dans Réglages Web ou config.yaml ; utilisez delegate_tasks "
+        "et subagent_status pour les coordonner.[/system]"
+    )
 
 
 @registry.register("nemesis.md", "Genere un fichier NEMESIS.md pour le suivi du projet")
@@ -1028,87 +796,7 @@ def history_command(args=None):
         console.print(f"  [{style}]#{i:03d} {prefix} | {content}[/{style}]")
 
 
-@registry.register("a2a", "A2A Scheduler — gere les taches deleguees aux sub-agents")
+@registry.register("a2a", "Alias historique du statut des sous-agents temporaires")
 def a2a_command(args=None):
-    """Gestion du planificateur A2A : etat des agents et des taches."""
-    while True:
-        agent_list = a2a_scheduler.list_agents()
-        reports = a2a_scheduler.collect_reports()
-
-        console.print("\n[bold magenta]Planificateur A2A[/bold magenta]")
-
-        table = Table(title=f"Agents enregistres ({len(agent_list)})", border_style="bright_cyan")
-        table.add_column("Nom", style="bold cyan")
-        table.add_column("Statut", style="yellow")
-        table.add_column("Modele", style="dim")
-        table.add_column("Tâche courante", style="white")
-        table.add_column("Capacites", style="green", width=30)
-
-        if not agent_list:
-            table.add_row("—", "—", "—", "—", "Aucun agent")
-        else:
-            for a in agent_list:
-                caps = ", ".join(a["capabilities"][:4])
-                if len(a["capabilities"]) > 4:
-                    caps += "..."
-                table.add_row(
-                    a["name"],
-                    "" if a["status"] == "idle" else "",
-                    a["model"],
-                    a["current_task"] or "—",
-                    caps or "—",
-                )
-        console.print(table)
-
-        if reports:
-            console.print(f"\n[bold]Rapports de taches ({len(reports)})[/bold]")
-            for r in reports:
-                status_icon = "" if r.status.value == "completed" else ""
-                console.print(f"  {status_icon} {r.task_id}: {r.summary[:80]}")
-
-        console.print("\n1. Lister les agents disponibles")
-        console.print("2. Afficher les rapports de taches")
-        console.print("3. Reinitialiser le planificateur")
-        console.print("4. Sonder les capacites de tous les agents")
-        console.print("q. Retour")
-
-        choice = console.input("\nChoix > ").strip().lower()
-        if choice == "1":
-            console.print(f"\n[bold]Agents ({len(agent_list)}) :[/bold]")
-            for a in agent_list:
-                console.print(f"  - {a['name']} ({a['model']}) — {a['status']}")
-                if a["domains"]:
-                    console.print(f"    Domaines: {', '.join(a['domains'])}")
-                if a["capabilities"]:
-                    console.print(f"    Capacites: {', '.join(a['capabilities'])}")
-        elif choice == "2":
-            reports = a2a_scheduler.collect_reports()
-            if not reports:
-                console.print("[yellow]Aucun rapport disponible.[/yellow]")
-            else:
-                for r in reports:
-                    console.print(f"\n[bold cyan]{r.task_id}[/bold cyan] — {r.status.value}")
-                    console.print(f"  Resume: {r.summary}")
-                    if r.artifacts:
-                        for a in r.artifacts:
-                            console.print(f"   {a.path} ({a.description})")
-                    if r.errors:
-                        for e in r.errors:
-                            console.print(f"   {e.get('code', '?')}: {e.get('message', '')}")
-        elif choice == "3":
-            from src.core.a2a_protocol import A2ACoordinator
-            a2a_scheduler.coordinator = A2ACoordinator()
-            console.print("[success]Planificateur reinitialise.[/success]")
-        elif choice == "4":
-            console.print("[system]Sondage de tous les agents...[/system]")
-            for name in list(ACTIVE_AGENTS.keys()):
-                agent = ACTIVE_AGENTS.get(name)
-                if agent:
-                    console.print(f"  → {name}...")
-                    manifest = agent.query_capabilities()
-                    if manifest:
-                        console.print(f"     Capacites: {', '.join(c.value for c in manifest.capabilities)}")
-                    else:
-                        console.print(f"     Pas de reponse A2A")
-        elif choice == "q":
-            break
+    """Affiche le statut des tâches éphémères."""
+    agent_status_command(args)

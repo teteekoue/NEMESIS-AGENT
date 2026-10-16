@@ -6,6 +6,14 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
 
 ## [Non publié] — Interface Web, Mémoire, GitHub, Performance
 
+### Sous-agents et skills
+
+- Ajout de flottes de sous-agents temporaires exécutées en parallèle via plusieurs profils API OpenAI-compatibles, avec reprise bornée des 429, rotation des identifiants, budget par tâche et rapports de progression.
+- Réglages réorganisés en navigation latérale ; ajout de profils fournisseurs personnalisés (nom, URL `/v1`, modèle et clé) et gestion des profils enregistrés.
+- Skills intégrées de brainstorming, design frontend, Git, diagnostic et vérification, désactivées par défaut et injectées dans le premier prompt des nouvelles conversations lorsqu'elles sont activées.
+- Import de skills via un fichier `SKILL.md` local ou une URL GitHub directe et validée. Le contenu importé n'est pas exécuté.
+- Variables d'environnement MCP configurables dans l'interface ; seules leurs clés sont affichées et le fichier MCP est écrit en mode privé.
+
 ### Ajouts
 
 - **Interface Web complète** (`web/`) : backend FastAPI + SPA React/Vite/TypeScript/Tailwind/shadcn-ui.
@@ -65,6 +73,7 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
 ### Dépendances ajoutées
 
 - Backend Web : `fastapi>=0.110`, `uvicorn[standard]>=0.29`, `websockets>=12` (voir `web/requirements.txt`).
+- Les dépendances Python requises par la flotte et l'import de skills (`requests`, `PyYAML`) sont déjà des dépendances de base dans `pyproject.toml` et `requirements.txt` ; aucune nouvelle dépendance Python runtime n'est nécessaire.
 - Frontend : voir `web/frontend/package.json` (React, Vite, Tailwind, Radix UI, xterm, zustand, ...).
 - MCP GitHub : fourni à l'exécution via `npx` (Node.js requis, non embarqué).
 

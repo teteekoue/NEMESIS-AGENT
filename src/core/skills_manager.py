@@ -47,6 +47,7 @@ class SkillManager:
             "name": skill_dir,
             "description": "Aucune description disponible.",
             "version": "unknown",
+            "source": "",
             "path": str(skill_path.resolve()) if skill_path.exists() else str(skill_path),
             "has_skill_md": skill_md.exists(),
         }
@@ -61,6 +62,7 @@ class SkillManager:
                     metadata["name"] = data.get("name") or metadata["name"]
                     metadata["description"] = data.get("description") or metadata["description"]
                     metadata["version"] = str(data.get("version") or metadata["version"])
+                    metadata["source"] = str(data.get("source") or "")
             # Body preview (first non-empty paragraph after frontmatter)
             body = re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, count=1, flags=re.DOTALL)
             body = body.strip()
@@ -107,6 +109,49 @@ class SkillManager:
         return meta
 
     # ── install ─────────────────────────────────────────────────
+
+    def install_skill_content(self, content: str) -> Tuple[bool, str]:
+        if not isinstance(content, str) or not content.strip():
+            return False, "Le contenu SKILL.md est vide."
+        if len(content.encode("utf-8")) > 200_000:
+            return False, "Le fichier SKILL.md dépasse la limite de 200 Ko."
+        match = re.match(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", content, re.DOTALL)
+        if not match:
+            return False, "Le fichier doit commencer par un frontmatter YAML entre ---."
+        try:
+            metadata = yaml.safe_load(match.group(1))
+        except yaml.YAMLError as exc:
+            return False, f"Frontmatter YAML invalide : {exc}"
+        if not isinstance(metadata, dict):
+            return False, "Le frontmatter doit contenir un objet YAML."
+        name = str(metadata.get("name") or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", name):
+            return False, "Le champ 'name' doit contenir 1 à 64 caractères (a-z, 0-9, tirets)."
+        if not str(metadata.get("description") or "").strip():
+            return False, "Le champ 'description' est obligatoire."
+
+        try:
+            self.library_path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return False, f"Impossible de préparer la bibliothèque de skills : {exc}"
+        destination = self.library_path / name
+        try:
+            destination.mkdir()
+        except FileExistsError:
+            return False, f"Un skill nommé '{name}' existe déjà."
+        try:
+            skill_file = destination / "SKILL.md"
+            with skill_file.open("x", encoding="utf-8") as handle:
+                handle.write(content)
+            skill_file.chmod(0o600)
+            return True, f"Skill '{name}' installé."
+        except OSError as exc:
+            try:
+                (destination / "SKILL.md").unlink(missing_ok=True)
+                destination.rmdir()
+            except OSError:
+                pass
+            return False, f"Impossible d'enregistrer le skill : {exc}"
 
     def install_from_local(self, source_path: str) -> Tuple[bool, str]:
         source = Path(source_path).expanduser().resolve()

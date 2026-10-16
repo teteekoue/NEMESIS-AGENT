@@ -63,13 +63,7 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-"*" = [
-    "*.txt",
-    "*.yaml",
-    "*.json",
-    "tools_library/**/*",
-    "VIBE_UI_LICENSE.txt"
-]
+"src.ui" = ["VIBE_UI_LICENSE.txt"]
 
 [tool.setuptools.data-files]
 "." = [
@@ -81,4 +75,19 @@ packages = [
 ]
 "tools_library/unit-converter" = [
     "tools_library/unit-converter/SKILL.md"
+]
+"tools_library/brainstorming" = [
+    "tools_library/brainstorming/SKILL.md"
+]
+"tools_library/frontend-design" = [
+    "tools_library/frontend-design/SKILL.md"
+]
+"tools_library/git-workflow" = [
+    "tools_library/git-workflow/SKILL.md"
+]
+"tools_library/systematic-debugging" = [
+    "tools_library/systematic-debugging/SKILL.md"
+]
+"tools_library/verification-before-completion" = [
+    "tools_library/verification-before-completion/SKILL.md"
 ]

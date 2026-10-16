@@ -35,7 +35,7 @@ if [ "$INSTALL_WEB" = "yes" ]; then
     echo ""
     if command -v node &>/dev/null && command -v npm &>/dev/null; then
         echo "Installation des dépendances frontend (npm)..."
-        (cd web/frontend && npm install --no-audit --no-fund)
+        (cd web/frontend && npm ci --no-audit --no-fund)
     else
         echo "AVERTISSEMENT: Node.js/npm introuvable — le frontend Web ne pourra pas être lancé."
         echo "             Installez Node.js 18+ puis: cd web/frontend && npm install"

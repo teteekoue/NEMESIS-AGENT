@@ -10,8 +10,8 @@ Développé par **Ekoue TETE** (TEJF).
 ## Installation
 
 ```bash
-git clone https://github.com/teteekoue/NEMESIS-CLI.git
-cd NEMESIS-CLI
+git clone https://github.com/teteekoue/NEMESIS-AGENT.git
+cd NEMESIS-AGENT
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 ```
@@ -44,7 +44,7 @@ Le backend FastAPI sert aussi le build React s'il existe (`web/frontend/dist`).
 
 ```bash
 # Web « tout-en-un » (un seul port)
-cd web/frontend && npm install && npm run build
+cd web/frontend && npm ci && npm run build
 cd ../.. && ./venv/bin/python3 -m web.backend   # API + UI sur http://localhost:8000
 ```
 
@@ -124,7 +124,7 @@ Exemple de déclenchement d'outil (le modèle émet du JSON, l'utilisateur valid
 
 ---
 
-## Outils (42)
+## Outils
 
 Registre dynamique partagé par CLI, Web, Telegram et sous-agents.
 
@@ -132,11 +132,13 @@ Registre dynamique partagé par CLI, Web, Telegram et sous-agents.
 - **Shell / processus** : `bash` (synchrone/arrière-plan), `kill_task`, `cleanup_logs`
 - **Recherche** : `glob`, `grep`, `web_search`, `web_fetch`
 - **Mémoire** : `memory_add`, `memory_update`, `memory_search`, `memory_get`, `memory_delete`, `memory_clear`
-- **Planification / sous-agents** : `todo`, `list_agents`, `delegate_task`, `check_reports`, `agent_status`, `get_task_output`, `skills_list`
+- **Planification / sous-agents** : `todo`, `delegate_tasks`, `subagent_status`, `get_task_output`, `skills_list`
 - **MCP** : `mcp_list`, `mcp_tools_list`, `mcp_call`
 - **Git / divers** : `git`
 
 Liste live : `/tools` (CLI) ou onglet **Outils** (Web).
+
+Les sous-agents sont des instances temporaires exécutées en parallèle via une API OpenAI-compatible (Groq par défaut). Configurez leur provider, clé API, modèle et limite de concurrence dans **Réglages → Sous-agents**. Voir [docs/SUBAGENTS.md](docs/SUBAGENTS.md).
 
 ---
 
@@ -193,4 +195,4 @@ Open-source — **TEJF / Ekoue TETE**. Voir [LICENSE](LICENSE).
 
 - GitHub : [github.com/teteekoue](https://github.com/teteekoue)
 - WhatsApp : +228 98 08 44 42
-- Issues : [github.com/teteekoue/NEMESIS-CLI/issues](https://github.com/teteekoue/NEMESIS-CLI/issues)
+- Issues : [github.com/teteekoue/NEMESIS-AGENT/issues](https://github.com/teteekoue/NEMESIS-AGENT/issues)

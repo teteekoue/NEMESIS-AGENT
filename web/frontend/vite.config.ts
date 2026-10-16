@@ -14,7 +14,7 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
-    allowedHosts: [".monkeycode-ai.live", ".monkeycode-ai.online", "localhost"],
+    allowedHosts: [".monkeycode-ai.live", ".monkeycode-ai.online", ".app.github.dev", "localhost"],
     proxy: {
       "/api": {
         target: BACKEND,

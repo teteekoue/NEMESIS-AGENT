@@ -50,7 +50,11 @@ BACKEND_PID=$!
 cd "$ROOT/web/frontend"
 if [ ! -d node_modules ]; then
   echo "Installation des dépendances frontend (npm)..."
-  npm install --no-audit --no-fund
+  if [ -f package-lock.json ]; then
+    npm ci --no-audit --no-fund
+  else
+    npm install --no-audit --no-fund
+  fi
 fi
 
 # --- wait for the backend to answer before starting the proxy ---

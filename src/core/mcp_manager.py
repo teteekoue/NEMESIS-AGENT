@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import shlex
+import os
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -99,8 +101,30 @@ class MCPManager:
 
     def _save_config(self) -> None:
         self.config_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.config_file, "w", encoding="utf-8") as f:
-            yaml.dump(self.servers, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        fd, temp_path = tempfile.mkstemp(prefix=".mcp-config-", dir=self.config_file.parent)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                yaml.safe_dump(
+                    self.servers,
+                    handle,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, self.config_file)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
 
     def add_server(
         self,

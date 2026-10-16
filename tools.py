@@ -1561,21 +1561,6 @@ def create_executor_from_config(config, bridge=None):
     workspace = config.get("security", {}).get("workspace", ".")
     if workspace in ("./workspace", "workspace"):
         workspace = "."
-    try:
-        return _create_new_executor(workspace)
-    except Exception:
-        return _create_legacy_executor(config, bridge=bridge)
+    from src.core.tool_bridge import ToolBridge
 
-
-def _create_new_executor(workspace: str):
-    """ToolBridge (subclass of ActionExecutor) — preferred entry point."""
-    try:
-        from src.core.tool_bridge import ToolBridge
-        return ToolBridge(workspace=workspace)
-    except Exception:
-        return ActionExecutor(workspace=workspace)
-
-
-def _create_legacy_executor(config, bridge=None):
-    workspace = config.get("security", {}).get("workspace", "./workspace")
-    return ActionExecutor(workspace=workspace, bridge=bridge)
+    return ToolBridge(workspace=workspace, config=config)

@@ -9,7 +9,7 @@ from src.core.agent_tools import create_registry, build_system_prompt, build_fee
 class TestToolRegistry:
     def test_create_registry(self, tmp_path):
         reg = create_registry(str(tmp_path))
-        assert len(reg) == 29
+        assert len(reg) == 25
         assert "read_file" in reg
         assert "edit" in reg
         assert "bash" in reg
@@ -24,11 +24,13 @@ class TestToolRegistry:
         assert "mcp_list" in reg
         assert "mcp_tools_list" in reg
         assert "mcp_call" in reg
+        assert "delegate_task" not in reg
+        assert "list_agents" not in reg
 
     def test_get_openai_functions(self, tmp_path):
         reg = create_registry(str(tmp_path))
         funcs = reg.get_openai_functions()
-        assert len(funcs) == 29
+        assert len(funcs) == 25
         for f in funcs:
             assert f["type"] == "function"
             assert "name" in f["function"]
@@ -58,9 +60,13 @@ class TestToolRegistry:
 
 class TestToolBridge:
     def test_create_bridge(self, tmp_path):
-        tb = ToolBridge(workspace=str(tmp_path))
+        tb = ToolBridge(workspace=str(tmp_path), config={
+            "subagents": {"api_key": "test-key"},
+        })
         assert tb.get_system_prompt() is not None
-        assert len(tb.get_openai_tools()) == 29
+        assert len(tb.get_openai_tools()) == 27
+        names = {tool["function"]["name"] for tool in tb.get_openai_tools()}
+        assert {"delegate_tasks", "subagent_status"} <= names
 
     def test_execute_read_file(self, tmp_path):
         f = tmp_path / "data.txt"

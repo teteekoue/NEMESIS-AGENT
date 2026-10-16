@@ -68,6 +68,8 @@ class AgentRunner:
         self.executor = create_executor_from_config(config, bridge=self.provider)
         if hasattr(self.executor, "set_cancel_event"):
             self.executor.set_cancel_event(self._interrupt)
+        if hasattr(self.executor, "set_subagent_authorizer"):
+            self.executor.set_subagent_authorizer(self._authorize)
 
         valid_tools: set = set()
         registry = getattr(self.executor, "registry", None)
@@ -129,6 +131,11 @@ class AgentRunner:
             self.approval_mode = mode
             if mode == "all":
                 self._authorized.clear()
+
+    def close(self) -> None:
+        self.request_interrupt()
+        if hasattr(self.executor, "close"):
+            self.executor.close()
 
     def start_turn(self, message: str) -> bool:
         if self._busy.is_set():

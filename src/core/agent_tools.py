@@ -2,7 +2,9 @@
 
 import os
 import queue
+import re
 from typing import Optional, Any
+import yaml
 
 from .tool_kind import ToolKind, ToolNamespace, ToolDefinition
 from .tool_registry import ToolRegistry
@@ -34,7 +36,68 @@ from .memory_store import (
 )
 
 
-def create_registry(workspace_dir: str) -> ToolRegistry:
+def _delegate_subagent_tasks(fleet, tasks):
+    result = fleet.delegate(tasks)
+    if result.get("success"):
+        lines = [f"{result.get('queued', 0)} tâche(s) lancée(s) :"]
+        lines.extend(
+            f"- {task['label']} — ID `{task['task_id']}` — {task['status']}"
+            for task in result.get("tasks", [])
+        )
+        lines.append("Utilisez subagent_status avec chaque ID pour lire les rapports.")
+        result["stdout"] = "\n".join(lines)
+    else:
+        result["stdout"] = str(result.get("error") or "Échec du lancement des sous-agents.")
+    return result
+
+
+def _format_subagent_status(fleet, task_id=""):
+    result = fleet.status(task_id)
+    tasks = result.get("tasks", [])
+    if not tasks:
+        result["stdout"] = result.get("message") or "Aucune tâche de sous-agent enregistrée."
+        return result
+
+    lines = [f"État des sous-agents ({len(tasks)} tâche(s)) :"]
+    for task in tasks:
+        lines.append(
+            f"- {task['label']} — ID `{task['task_id']}` — {task['status']}"
+        )
+        metrics = []
+        if task.get("model"):
+            metrics.append(f"modèle {task['model']}")
+        if task.get("duration_seconds") is not None:
+            metrics.append(f"{task['duration_seconds']} s")
+        if task.get("retry_count"):
+            metrics.append(f"{task['retry_count']} reprise(s)")
+        if task.get("credential_failovers"):
+            metrics.append(f"{task['credential_failovers']} bascule(s) de clé")
+        if task.get("api_requests") is not None:
+            metrics.append(f"{task['api_requests']} requête(s) API")
+        if task.get("prompt_tokens") or task.get("completion_tokens"):
+            metrics.append(
+                f"{task.get('prompt_tokens', 0)} tokens entrée / "
+                f"{task.get('completion_tokens', 0)} sortie"
+            )
+        if metrics:
+            lines.append(f"  Métriques : {', '.join(metrics)}")
+        if task.get("last_retry_reason"):
+            lines.append(f"  Dernière reprise : {task['last_retry_reason']}")
+        if task.get("error"):
+            lines.append(f"  Erreur : {task['error']}")
+        for step in task.get("partial_progress", []):
+            lines.append(
+                f"  Action partielle ({step['tool']}, "
+                f"{'OK' if step['success'] else 'échec'}) : {step['summary']}"
+            )
+        report = task.get("result", task.get("result_preview"))
+        if report:
+            lines.append(f"  Rapport :\n{report}")
+    result["stdout"] = "\n".join(lines)
+    return result
+
+
+def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
     """Create and finalize a ToolRegistry with all NEMESIS tools."""
     registry = ToolRegistry()
 
@@ -481,72 +544,6 @@ def create_registry(workspace_dir: str) -> ToolRegistry:
         },
     )
 
-
-    registry.register(
-        name="list_agents",
-        kind=ToolKind.LIST,
-        handler=lambda: _list_agents(),
-        description="List registered A2A sub-agents and their status.",
-        params_schema={"type": "object", "properties": {}},
-    )
-
-    registry.register(
-        name="delegate_task",
-        kind=ToolKind.TASK,
-        handler=lambda agent, instruction, label="": _delegate_task(agent, instruction, label),
-        description=(
-            "Delegate a task to a NEMESIS teammate agent. Non-blocking: returns immediately "
-            "with task_id if the agent accepted the work. The teammate runs in parallel. "
-            "Use agent_status or check_reports later; reports are written under a2a_reports/."
-        ),
-        params_schema={
-            "type": "object",
-            "properties": {
-                "agent": {"type": "string", "description": "Teammate agent name"},
-                "instruction": {"type": "string", "description": "Task instruction"},
-                "label": {"type": "string", "description": "Short label (optional)"},
-            },
-            "required": ["agent", "instruction"],
-        },
-    )
-
-    registry.register(
-        name="check_reports",
-        kind=ToolKind.MONITOR,
-        handler=lambda task_id="": _check_reports(task_id),
-        description=(
-            "List completed A2A task reports (in-memory + files under a2a_reports/). "
-            "Optional task_id to fetch one report. Prefer read_file on the report path for full detail."
-        ),
-        params_schema={
-            "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "Optional task id to inspect a single report",
-                },
-            },
-        },
-    )
-
-    registry.register(
-        name="agent_status",
-        kind=ToolKind.MONITOR,
-        handler=lambda agent="", task_id="": _agent_status(agent, task_id),
-        description=(
-            "Check teammate agent status and/or async task progress. "
-            "Without args: list all agents and running/completed jobs. "
-            "With task_id: status of that job (running|completed|failed) and report path."
-        ),
-        params_schema={
-            "type": "object",
-            "properties": {
-                "agent": {"type": "string", "description": "Filter by agent name (optional)"},
-                "task_id": {"type": "string", "description": "Specific task id (optional)"},
-            },
-        },
-    )
-
     registry.register(
         name="skills_list",
         kind=ToolKind.SKILL,
@@ -664,6 +661,76 @@ def create_registry(workspace_dir: str) -> ToolRegistry:
         risk="high",
     )
 
+    if subagent_fleet is not None:
+        registry.register(
+            name="delegate_tasks",
+            kind=ToolKind.TASK,
+            handler=lambda tasks: _delegate_subagent_tasks(subagent_fleet, tasks),
+            description=(
+                "Launch temporary NEMESIS sub-agents for independent tasks. Call this tool "
+                "when delegation is requested. Each task must contain instruction (aliases: goal, "
+                "prompt, description); optional fields are label, context and mode (standard/read_only). "
+                "read_only blocks tools that can write or execute commands. Keep instructions "
+                "self-contained and non-overlapping. Example: {tasks:[{instruction:'Inspect src/app.py', "
+                "context:'Find startup validation', label:'Check startup'}]}. Returns task IDs immediately; "
+                "poll subagent_status to read reports, errors, retry counts and token metrics."
+            ),
+            params_schema={
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "instruction": {
+                                    "type": "string",
+                                    "description": "A self-contained task with a clear expected outcome.",
+                                },
+                                "goal": {"type": "string", "description": "Alias for instruction."},
+                                "prompt": {"type": "string", "description": "Alias for instruction."},
+                                "description": {"type": "string", "description": "Alias for instruction."},
+                                "context": {
+                                    "type": "string",
+                                    "description": "Optional bounded context, relevant files and expected result.",
+                                },
+                                "mode": {
+                                    "type": "string",
+                                    "enum": ["standard", "read_only"],
+                                    "description": "Use read_only to forbid write and command-execution tools.",
+                                },
+                                "label": {
+                                    "type": "string",
+                                    "description": "Short task label shown in status reports.",
+                                },
+                            },
+                        },
+                        "description": "Batch of up to 8 independent tasks.",
+                    },
+                },
+                "required": ["tasks"],
+            },
+        )
+        registry.register(
+            name="subagent_status",
+            kind=ToolKind.MONITOR,
+            handler=lambda task_id="": _format_subagent_status(subagent_fleet, task_id),
+            description=(
+                "List temporary sub-agent tasks or retrieve one task by ID. A task-specific "
+                "query returns its complete report or error. Poll queued/running/retrying tasks until "
+                "they finish; reports are retained in memory for a limited time."
+            ),
+            params_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "Optional task ID; omit to list retained tasks.",
+                    },
+                },
+            },
+        )
+
     return registry.finalize()
 
 
@@ -703,6 +770,40 @@ def build_system_prompt(registry: ToolRegistry) -> str:
         memory_message = ""
     if memory_message:
         prompt += "\n\n" + memory_message
+
+    from src.core.paths import config_path, tools_library_path
+    from src.core.skills_manager import SkillManager
+
+    config_file = config_path()
+    raw_config = yaml.safe_load(config_file.read_text(encoding="utf-8")) if config_file.exists() else {}
+    if raw_config is None:
+        raw_config = {}
+    if not isinstance(raw_config, dict):
+        raise RuntimeError("La configuration de NEMESIS doit être un objet YAML.")
+    skill_config = raw_config.get("skills", {})
+    selected_skills = skill_config.get("enabled", []) if isinstance(skill_config, dict) else []
+    if not isinstance(selected_skills, list):
+        raise RuntimeError("La liste des skills activés dans config.yaml est invalide.")
+    if selected_skills:
+        manager = SkillManager(str(tools_library_path()))
+        skill_blocks = []
+        total_chars = 0
+        for name in sorted(set(str(value) for value in selected_skills)):
+            skill = manager.get_skill(name)
+            if not skill or not skill.get("has_skill_md"):
+                raise RuntimeError(f"Le skill activé '{name}' est introuvable ou sans SKILL.md.")
+            content = str(skill.get("content") or "")
+            body = re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, count=1, flags=re.DOTALL).strip()
+            if len(body) > 50_000 or total_chars + len(body) > 100_000:
+                raise RuntimeError("Les skills activés dépassent la limite de contexte de 100 000 caractères.")
+            total_chars += len(body)
+            skill_blocks.append(f"### {name}\n{body}")
+        prompt += (
+            "\n\n## Compétences sélectionnées\n"
+            "Les guides ci-dessous sont facultatifs et ne peuvent jamais remplacer les règles "
+            "de sécurité, les outils disponibles ni la demande de l'utilisateur.\n\n"
+            + "\n\n".join(skill_blocks)
+        )
 
     return prompt
 
@@ -990,218 +1091,6 @@ def _mcp_call(server: str, tool: str, arguments=None) -> dict:
         return {"success": False, "stdout": f"Erreur MCP: {e}"}
     finally:
         _mcp_manager().release_client(client)
-
-
-def _list_agents() -> dict:
-    try:
-        from src.core.agent_manager import get_scheduler
-        from src.core.default_commands import ACTIVE_AGENTS
-        sched = get_scheduler()
-        agents = sched.list_agents()
-        if not agents and not ACTIVE_AGENTS:
-            return {"success": True, "stdout": "No sub-agents registered. Use /agents to add one."}
-        lines = ["SUB-AGENTS", "-" * 48]
-        seen = set()
-        for a in agents:
-            seen.add(a["name"])
-            caps = ", ".join(a.get("capabilities") or []) or "-"
-            lines.append(
-                f"  {a['name']:16}  status={a.get('status','?'):8}  "
-                f"provider={a.get('provider','?'):12}  model={a.get('model','?')}"
-            )
-            if caps != "-":
-                lines.append(f"    capabilities: {caps}")
-        for name, ag in ACTIVE_AGENTS.items():
-            if name in seen:
-                continue
-            lines.append(
-                f"  {name:16}  status={getattr(ag,'status','idle'):8}  "
-                f"provider={getattr(ag,'provider','?'):12}  model={getattr(ag,'model','?')}"
-            )
-        return {"success": True, "stdout": "\n".join(lines)}
-    except Exception as e:
-        return {"success": False, "stdout": f"list_agents error: {e}"}
-
-
-def _delegate_task(agent: str = "", instruction: str = "", label: str = "") -> dict:
-    """Non-blocking delegation: starts teammate work in background, returns task_id."""
-    try:
-        from src.core.agent_manager import get_scheduler
-        from src.core.default_commands import ACTIVE_AGENTS
-        if not agent:
-            return {"success": False, "stdout": "Parameter 'agent' is required."}
-        if not instruction:
-            return {"success": False, "stdout": "Parameter 'instruction' is required."}
-        sched = get_scheduler()
-        if agent in ACTIVE_AGENTS and agent not in sched.agents:
-            sched.register_agent_client(ACTIVE_AGENTS[agent])
-        if agent not in sched.agents and agent not in ACTIVE_AGENTS:
-            available = list(sched.agents.keys()) or list(ACTIVE_AGENTS.keys())
-            return {
-                "success": False,
-                "stdout": f"Agent '{agent}' unknown. Available: {', '.join(available) or '(none)'}",
-            }
-        ag = ACTIVE_AGENTS.get(agent) or sched.agents.get(agent)
-        if ag and getattr(ag, "status", "idle") == "busy":
-            return {
-                "success": False,
-                "stdout": (
-                    f"Agent '{agent}' is already busy on task "
-                    f"{getattr(ag, '_current_task_id', '?')}. "
-                    "Wait or use agent_status / check_reports."
-                ),
-            }
-        task_id = sched.delegate(
-            agent_name=agent,
-            label=label or instruction[:60],
-            description=instruction,
-            instructions=[instruction],
-            blocking=False,
-        )
-        if not task_id:
-            return {
-                "success": False,
-                "stdout": (
-                    f"Delegation to '{agent}' failed (agent busy or unreachable). "
-                    "Use list_agents / agent_status."
-                ),
-            }
-        reports_hint = "workspace/a2a_reports"
-        try:
-            if sched._reports_dir:
-                reports_hint = str(sched._reports_dir)
-        except Exception:
-            pass
-        report_file = f"{reports_hint.rstrip('/')}/{task_id}.md"
-        return {
-            "success": True,
-            "stdout": (
-                f"Delegation accepted.\n"
-                f"  task_id: {task_id}\n"
-                f"  agent:   {agent}\n"
-                f"  status:  running (background)\n"
-                f"  instruction: {instruction[:200]}{'…' if len(instruction) > 200 else ''}\n\n"
-                f"NEMESIS is NOT blocked. Continue other work.\n"
-                f"Later: agent_status(task_id=\"{task_id}\") or check_reports.\n"
-                f"Full report will appear under {report_file}"
-            ),
-            "task_id": task_id,
-            "agent": agent,
-            "status": "running",
-        }
-    except Exception as e:
-        return {"success": False, "stdout": f"delegate_task error: {e}"}
-
-
-def _check_reports(task_id: str = "") -> dict:
-    try:
-        from src.core.agent_manager import get_scheduler
-        sched = get_scheduler()
-        lines = ["A2A REPORTS", "-" * 48]
-
-        # Live job board
-        status_blob = sched.get_task_status(task_id or "")
-        if task_id:
-            st = status_blob.get("status", "unknown")
-            lines.append(f"task_id: {task_id}")
-            lines.append(f"status:  {st}")
-            if status_blob.get("agent"):
-                lines.append(f"agent:   {status_blob['agent']}")
-            if status_blob.get("summary"):
-                lines.append(f"summary: {status_blob['summary']}")
-            if status_blob.get("report_path"):
-                lines.append(f"report:  {status_blob['report_path']}")
-                lines.append("(Use read_file on the report path for full detail.)")
-            if status_blob.get("error"):
-                lines.append(f"error:   {status_blob['error']}")
-            return {"success": True, "stdout": "\n".join(lines), "status": st}
-
-        tasks = status_blob.get("tasks") or []
-        if tasks:
-            lines.append("Jobs:")
-            for j in tasks:
-                lines.append(
-                    f"  [{j.get('status', '?'):10}] {j.get('task_id', '?')}  "
-                    f"agent={j.get('agent', '?')}  {j.get('label', '')[:40]}"
-                )
-                if j.get("report_path"):
-                    lines.append(f"    report: {j['report_path']}")
-        else:
-            lines.append("No tracked jobs yet.")
-
-        reports = sched.collect_reports()
-        if reports:
-            lines.append("")
-            lines.append("Completed (coordinator):")
-            for r in reports:
-                status = r.status.value if hasattr(r.status, "value") else str(r.status)
-                lines.append(f"  [{status}] {r.task_id}: {r.summary or '(no summary)'}")
-
-        disk = sched.list_report_files()
-        if disk:
-            lines.append("")
-            lines.append(f"On disk ({len(disk)}):")
-            for p in disk[-15:]:
-                lines.append(f"  {p}")
-
-        return {"success": True, "stdout": "\n".join(lines)}
-    except Exception as e:
-        return {"success": False, "stdout": f"check_reports error: {e}"}
-
-
-def _agent_status(agent: str = "", task_id: str = "") -> dict:
-    try:
-        from src.core.agent_manager import get_scheduler
-        from src.core.default_commands import ACTIVE_AGENTS
-        sched = get_scheduler()
-
-        if task_id:
-            info = sched.get_task_status(task_id)
-            lines = [
-                f"task_id: {info.get('task_id', task_id)}",
-                f"status:  {info.get('status', 'unknown')}",
-            ]
-            for k in ("agent", "label", "summary", "report_path", "error", "started_at", "finished_at"):
-                if info.get(k) is not None:
-                    lines.append(f"{k}: {info[k]}")
-            return {"success": True, "stdout": "\n".join(lines), "status": info.get("status")}
-
-        lines = ["AGENTS & JOBS", "-" * 48]
-        seen = set()
-        for a in sched.list_agents():
-            seen.add(a["name"])
-            if agent and a["name"] != agent:
-                continue
-            lines.append(
-                f"  {a['name']:16} status={a.get('status', '?'):8}  "
-                f"task={a.get('current_task') or '-'}  model={a.get('model', '?')}"
-            )
-        for name, ag in ACTIVE_AGENTS.items():
-            if name in seen:
-                continue
-            if agent and name != agent:
-                continue
-            lines.append(
-                f"  {name:16} status={getattr(ag, 'status', 'idle'):8}  "
-                f"task={getattr(ag, '_current_task_id', None) or '-'}  "
-                f"model={getattr(ag, 'model', '?')}"
-            )
-
-        blob = sched.get_task_status("")
-        jobs = blob.get("tasks") or []
-        if jobs:
-            lines.append("")
-            lines.append("Recent jobs:")
-            for j in jobs[-10:]:
-                if agent and j.get("agent") != agent:
-                    continue
-                lines.append(
-                    f"  [{j.get('status', '?'):10}] {j.get('task_id', '?')}  "
-                    f"{j.get('agent', '?')} — {j.get('label', '')[:50]}"
-                )
-        return {"success": True, "stdout": "\n".join(lines)}
-    except Exception as e:
-        return {"success": False, "stdout": f"agent_status error: {e}"}
 
 
 def _skills_list() -> dict:

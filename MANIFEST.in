@@ -24,3 +24,8 @@ exclude web/frontend/node_modules
 exclude web/frontend/dist
 global-exclude *.pyc
 global-exclude __pycache__
+prune web/frontend/node_modules
+prune web/frontend/dist
+prune .pytest_cache
+recursive-exclude web/frontend/node_modules *
+recursive-exclude web/frontend/dist *

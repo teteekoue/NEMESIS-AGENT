@@ -14,18 +14,41 @@ from src.core.tools.bash import run_bash_streamed
 class ToolBridge:
     """Adapter: presents the new ToolRegistry through the old execute_tool() interface."""
 
-    def __init__(self, workspace: str = "./workspace", cancel_event=None):
+    def __init__(
+        self,
+        workspace: str = "./workspace",
+        cancel_event=None,
+        config: Dict[str, Any] | None = None,
+        enable_subagents: bool = True,
+    ):
         self.workspace_root = Path(workspace).resolve()
         if not self.workspace_root.exists():
             self.workspace_root.mkdir(parents=True, exist_ok=True)
-        self.registry = create_registry(str(self.workspace_root))
+        self.subagent_fleet = None
+        if enable_subagents:
+            from src.core.subagents import SubagentFleet
+
+            self.subagent_fleet = SubagentFleet(config or {}, str(self.workspace_root))
+        self.registry = create_registry(str(self.workspace_root), self.subagent_fleet)
         self._read_paths = set()
         # Optional threading.Event used to abort a running bash command as soon
         # as the user interrupts the turn (Stop button).
         self.cancel_event = cancel_event
+        if self.subagent_fleet is not None:
+            self.subagent_fleet.set_cancel_event(cancel_event)
 
     def set_cancel_event(self, cancel_event) -> None:
         self.cancel_event = cancel_event
+        if self.subagent_fleet is not None:
+            self.subagent_fleet.set_cancel_event(cancel_event)
+
+    def set_subagent_authorizer(self, callback) -> None:
+        if self.subagent_fleet is not None:
+            self.subagent_fleet.set_authorizer(callback)
+
+    def close(self) -> None:
+        if self.subagent_fleet is not None:
+            self.subagent_fleet.close()
 
     def risk_for(self, tool_name: str, parameters: Dict[str, Any] | None = None) -> str:
         """Return the runtime risk class used by approval UIs."""
@@ -252,7 +275,14 @@ class ToolBridge:
     def get_system_prompt(self) -> str:
         # The live registry is the single source of truth for capabilities.
         # A static prompt can drift from the installed handlers and schemas.
-        return build_system_prompt(self.registry)
+        prompt = build_system_prompt(self.registry)
+        if self.subagent_fleet is not None and not self.subagent_fleet._has_api_key():
+            prompt += (
+                "\n\nConfiguration sous-agents incomplète : aucune clé API disponible. "
+                "Prévenir l'utilisateur au démarrage et indiquer Réglages → Sous-agents "
+                "ou GROQ_API_KEY/OPENAI_API_KEY avant de proposer une délégation."
+            )
+        return prompt
 
     def get_openai_tools(self) -> list:
         return self.registry.get_openai_functions()
@@ -308,5 +338,5 @@ class ToolBridge:
         return mapping.get(tool_name, (tool_name, lambda p: p))
 
 
-def create_tool_bridge(workspace: str = "./workspace") -> ToolBridge:
-    return ToolBridge(workspace)
+def create_tool_bridge(workspace: str = "./workspace", config=None) -> ToolBridge:
+    return ToolBridge(workspace, config=config)

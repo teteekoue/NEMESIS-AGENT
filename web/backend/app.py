@@ -13,9 +13,11 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from requests import RequestException
 
 from web.backend import sessions as session_store
+from web.backend import config_store
 from web.backend import settings as settings_store
 from web.backend import telegram_settings as telegram_store
 from web.backend import github_settings as github_store
@@ -52,6 +54,23 @@ class ConfigPatch(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+class SubagentsConfigIn(BaseModel):
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+    name: Optional[str] = None
+    id: Optional[str] = None
+    max_concurrent: int = 4
+    max_iterations: int = 12
+    timeout_seconds: int = 180
+    max_retries: int = 3
+    max_tokens_per_task: int = 24000
+    api_key: Optional[str] = None
+    clear_api_key: bool = False
+
+    model_config = {"extra": "ignore"}
+
+
 class ModelChoice(BaseModel):
     model: str
 
@@ -75,6 +94,17 @@ class McpServerIn(BaseModel):
     args: Optional[List[str]] = None
     env: Optional[Dict[str, str]] = None
     description: str = ""
+
+
+class SkillEnabledIn(BaseModel):
+    name: str
+    enabled: bool
+
+
+class SkillImportIn(BaseModel):
+    content: Optional[str] = Field(default=None, max_length=200_000)
+    filename: Optional[str] = Field(default=None, max_length=255)
+    url: Optional[str] = Field(default=None, max_length=2048)
 
 
 class MemoryBlockIn(BaseModel):
@@ -123,6 +153,37 @@ def patch_config(patch: ConfigPatch) -> Dict[str, Any]:
         data["nemapi"] = {k: v for k, v in data["nemapi"].items() if v is not None}
     update_config(data)
     return public_config()
+
+
+@app.get("/api/subagents")
+def get_subagents_config() -> Dict[str, Any]:
+    return config_store.public_subagents_config()
+
+
+@app.put("/api/subagents")
+def put_subagents_config(payload: SubagentsConfigIn) -> Dict[str, Any]:
+    try:
+        return config_store.save_subagents_config(payload.model_dump(exclude_none=True))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/subagents/profiles")
+def post_subagent_profile(payload: SubagentsConfigIn) -> Dict[str, Any]:
+    try:
+        return config_store.save_subagent_profile(payload.model_dump(exclude_none=True))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/subagents/profiles/{profile_id}")
+def remove_subagent_profile(profile_id: str) -> Dict[str, Any]:
+    try:
+        return config_store.delete_subagent_profile(profile_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/models")
@@ -174,6 +235,32 @@ def delete_mcp_server(name: str) -> Dict[str, Any]:
 @app.get("/api/skills")
 def get_skills() -> Dict[str, Any]:
     return {"skills": settings_store.list_skills()}
+
+
+@app.put("/api/skills")
+def put_skill_enabled(payload: SkillEnabledIn) -> Dict[str, Any]:
+    try:
+        return {"skills": settings_store.set_skill_enabled(payload.name, payload.enabled)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/skills/import")
+def post_skill_import(payload: SkillImportIn) -> Dict[str, Any]:
+    try:
+        if payload.url:
+            result = settings_store.import_skill_from_github(payload.url)
+        elif payload.content and (payload.filename or "").rsplit("/", 1)[-1].lower() == "skill.md":
+            result = settings_store.import_skill_content(payload.content)
+        else:
+            raise ValueError("Sélectionnez un fichier SKILL.md ou fournissez une URL GitHub.")
+        return {"skills": settings_store.list_skills(), **result}
+    except (RequestException, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Import GitHub échoué : {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ----------------------------------------------------------------------
@@ -426,7 +513,7 @@ async def ws_chat(websocket: WebSocket) -> None:
     try:
         await asyncio.wait({recv_task, emit_task}, return_when=asyncio.FIRST_COMPLETED)
     finally:
-        runner.request_interrupt()
+        runner.close()
         for task in (recv_task, emit_task):
             if not task.done():
                 task.cancel()
