@@ -14,12 +14,18 @@ from src.core.tools.bash import run_bash_streamed
 class ToolBridge:
     """Adapter: presents the new ToolRegistry through the old execute_tool() interface."""
 
-    def __init__(self, workspace: str = "./workspace"):
+    def __init__(self, workspace: str = "./workspace", cancel_event=None):
         self.workspace_root = Path(workspace).resolve()
         if not self.workspace_root.exists():
             self.workspace_root.mkdir(parents=True, exist_ok=True)
         self.registry = create_registry(str(self.workspace_root))
         self._read_paths = set()
+        # Optional threading.Event used to abort a running bash command as soon
+        # as the user interrupts the turn (Stop button).
+        self.cancel_event = cancel_event
+
+    def set_cancel_event(self, cancel_event) -> None:
+        self.cancel_event = cancel_event
 
     def risk_for(self, tool_name: str, parameters: Dict[str, Any] | None = None) -> str:
         """Return the runtime risk class used by approval UIs."""
@@ -95,7 +101,7 @@ class ToolBridge:
                     # Foreground: execute and collect all output (no streaming)
                     wd = str(workdir) if not isinstance(workdir, str) else workdir
                     full_output = []
-                    for update in run_bash_streamed(cmd, wd, timeout):
+                    for update in run_bash_streamed(cmd, wd, timeout, cancel_event=self.cancel_event):
                         if "partial" in update:
                             # Accumulate output but don't yield it
                             full_output.append(update["partial"])

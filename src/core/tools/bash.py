@@ -7,6 +7,7 @@ import uuid
 import re
 import threading
 import sys
+import queue
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Generator
 
@@ -126,15 +127,15 @@ def _run_foreground(cmd: str, workdir: str, timeout_ms: int) -> BashOutput:
     timeout_ms = min(timeout_ms, _MAX_TIMEOUT_MS)
     timeout_sec = timeout_ms / 1000.0
 
-    # On ajoute -S pour permettre à sudo de lire le mot de passe depuis stdin
-    actual_cmd = cmd.replace("sudo ", "sudo -S ", 1) if cmd.startswith("sudo ") else cmd
-
     try:
         proc = subprocess.Popen(
-            actual_cmd,
+            cmd,
             shell=True,
             cwd=workdir,
-            stdin=sys.stdin,
+            # Never inherit the server's stdin: a command that reads stdin
+            # (e.g. sudo waiting for a password) would otherwise block forever
+            # with no output. /dev/null makes it fail fast instead.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             preexec_fn=os.setsid if os.name != "nt" else None,
@@ -195,15 +196,12 @@ def _run_foreground(cmd: str, workdir: str, timeout_ms: int) -> BashOutput:
 def _run_background(cmd: str, workdir: str, description: str) -> BashOutput:
     task_id = _make_task_id()
 
-    # On ajoute -S pour permettre à sudo de lire le mot de passe depuis stdin
-    actual_cmd = cmd.replace("sudo ", "sudo -S ", 1) if cmd.startswith("sudo ") else cmd
-
     try:
         proc = subprocess.Popen(
-            actual_cmd,
+            cmd,
             shell=True,
             cwd=workdir,
-            stdin=sys.stdin,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             preexec_fn=os.setsid if os.name != "nt" else None,
@@ -330,71 +328,142 @@ def list_background_tasks() -> List[Dict[str, Any]]:
 # Streaming bash execution (real-time output)
 # ──────────────────────────────────────────────
 
+def _terminate_process_group(proc: subprocess.Popen) -> None:
+    """Kill the whole process group (shell + children) and reap it."""
+    try:
+        if os.name != "nt":
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:
+            proc.kill()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+
+
 def run_bash_streamed(
     cmd: str,
     workdir: str,
     timeout_ms: Optional[int] = None,
+    cancel_event=None,
 ) -> Generator[Dict[str, Any], None, None]:
     """Execute bash and yield lines in real-time as {'partial': line} dicts.
-    
+
     Final result is yielded as {'success': bool, 'output': str, ...}.
     Used by ToolBridge for real-time display of command output.
+
+    ``cancel_event`` (threading.Event) aborts the running command as soon as it
+    is set. Output is read on a reader thread so the timeout and the cancel
+    signal are honored even when the command produces NO output at all (e.g.
+    ``sudo`` waiting for a password) — otherwise a silent command would block
+    this generator forever.
     """
     timeout_ms = timeout_ms or _DEFAULT_TIMEOUT_MS
     timeout_ms = min(timeout_ms, _MAX_TIMEOUT_MS)
     timeout_sec = timeout_ms / 1000.0
 
-    actual_cmd = cmd.replace("sudo ", "sudo -S ", 1) if cmd.startswith("sudo ") else cmd
-
     try:
         proc = subprocess.Popen(
-            actual_cmd,
+            cmd,
             shell=True,
             cwd=workdir,
-            stdin=sys.stdin,
+            # A silent, stdin-reading command (sudo password prompt, interactive
+            # tool) must not hang: /dev/null makes it fail fast with output.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=0,  # unbuffered: readline() streams line by line
             preexec_fn=os.setsid if os.name != "nt" else None,
         )
-
-        output_lines = []
-        start_time = time.time()
-
-        # Read line by line for real-time streaming
-        for line_bytes in iter(proc.stdout.readline, b""):
-            line = line_bytes.decode("utf-8", errors="replace").rstrip()
-            output_lines.append(line)
-            yield {"partial": line}
-
-            if timeout_sec > 0 and (time.time() - start_time) > timeout_sec:
-                if os.name != "nt":
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                else:
-                    proc.kill()
-                output = "\n".join(output_lines)
-                yield {
-                    "success": False,
-                    "output": output,
-                    "error": f"Command timed out after {timeout_ms}ms",
-                    "signal": "timeout",
-                    "exit_code": -1,
-                }
-                return
-
-        proc.stdout.close()
-        proc.wait()
-
-        output = "\n".join(output_lines)
-        output = _add_noop_reminder(output, cmd)
-
-        yield {
-            "success": proc.returncode == 0,
-            "exit_code": proc.returncode,
-            "output": output,
-        }
-
     except FileNotFoundError:
         yield {"success": False, "error": f"Command not found: {cmd.split()[0]}"}
+        return
     except OSError as e:
         yield {"success": False, "error": str(e)}
+        return
+
+    output_lines: List[str] = []
+    line_queue: "queue.Queue[Optional[bytes]]" = queue.Queue()
+    start_time = time.time()
+
+    def _reader() -> None:
+        try:
+            for chunk in iter(lambda: proc.stdout.read(4096), b""):
+                line_queue.put(chunk)
+        except Exception:
+            pass
+        finally:
+            line_queue.put(None)
+
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
+
+    timed_out = False
+    cancelled = False
+    stream_done = False
+    carry = b""
+
+    while not stream_done:
+        try:
+            chunk = line_queue.get(timeout=0.1)
+        except queue.Empty:
+            chunk = b""
+
+        if chunk is None:
+            stream_done = True
+        elif chunk:
+            carry += chunk
+            # Split on newlines, keep the trailing partial line buffered.
+            while b"\n" in carry:
+                raw_line, carry = carry.split(b"\n", 1)
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\r")
+                output_lines.append(line)
+                yield {"partial": line}
+
+        # Check cancel/timeout on every poll cycle, even without output.
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            break
+        if timeout_sec > 0 and (time.time() - start_time) > timeout_sec:
+            timed_out = True
+            break
+
+    if carry:
+        line = carry.decode("utf-8", errors="replace").rstrip("\r")
+        output_lines.append(line)
+        yield {"partial": line}
+
+    if cancelled or timed_out:
+        _terminate_process_group(proc)
+        output = _add_noop_reminder("\n".join(output_lines), cmd)
+        if cancelled:
+            yield {
+                "success": False,
+                "output": output,
+                "error": "Commande interrompue par l'utilisateur.",
+                "signal": "interrupted",
+                "exit_code": -1,
+            }
+        else:
+            yield {
+                "success": False,
+                "output": output,
+                "error": f"Command timed out after {timeout_ms}ms",
+                "signal": "timeout",
+                "exit_code": -1,
+            }
+        return
+
+    try:
+        proc.stdout.close()
+    except Exception:
+        pass
+    proc.wait()
+    output = _add_noop_reminder("\n".join(output_lines), cmd)
+    yield {
+        "success": proc.returncode == 0,
+        "exit_code": proc.returncode,
+        "output": output,
+    }

@@ -46,6 +46,10 @@ class AgentRunner:
         security = config.get("security", {}) if isinstance(config.get("security"), dict) else {}
         self.approval_mode = approval_mode or security.get("approval_mode") or "confirm"
 
+        # Created before the executor so a running bash command can be aborted
+        # from the WebSocket thread (Stop button) even with no output.
+        self._interrupt = threading.Event()
+
         self.provider = create_provider(config)
         if model:
             self.provider.model = model
@@ -62,6 +66,8 @@ class AgentRunner:
         if hasattr(self.provider, "configure_session"):
             self.provider.configure_session(session_id, initialized=self._session_initialized)
         self.executor = create_executor_from_config(config, bridge=self.provider)
+        if hasattr(self.executor, "set_cancel_event"):
+            self.executor.set_cancel_event(self._interrupt)
 
         valid_tools: set = set()
         registry = getattr(self.executor, "registry", None)
@@ -70,7 +76,6 @@ class AgentRunner:
         self.parser = ActionParser(extra_valid_tools=valid_tools or None)
 
         self._authorized: set = set()
-        self._interrupt = threading.Event()
         self._auth_waiters: Dict[str, threading.Event] = {}
         self._auth_results: Dict[str, str] = {}
         self._busy = threading.Event()
