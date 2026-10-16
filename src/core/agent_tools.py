@@ -173,7 +173,7 @@ def create_registry(workspace_dir: str) -> ToolRegistry:
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Optional timeout in milliseconds. Default: 120000 (2 min). 0 = unbounded for background.",
+                    "description": "Timeout in SECONDS. Always set it to fit the command: 10-30s for quick inspection, 60-600s for builds/tests/installs. Minimum 10, maximum 600, default 120. Ignored for is_background=true.",
                 },
                 "is_background": {
                     "type": "boolean",
@@ -829,11 +829,11 @@ def _delete_file(target_file: str, workspace_dir: str) -> object:
 
 
 def _make_bash_input(command, description="", timeout=None, is_background=False, workdir=None):
-    from .tools.bash import BashInput
+    from .tools.bash import BashInput, timeout_seconds_to_ms
     return BashInput(
         command=command,
         description=description or "",
-        timeout_ms=timeout,
+        timeout_ms=timeout_seconds_to_ms(timeout),
         is_background=is_background,
         workdir=workdir,
     )

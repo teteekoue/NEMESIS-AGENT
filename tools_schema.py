@@ -21,7 +21,7 @@ TOOLS_SCHEMA: List[Dict[str, Any]] = [
     {
         "name": 'bash',
         "description": 'Exécute une commande shell (synchrone ou asynchrone)',
-        "parameters": {'mode': "str - 'synchrone' (defaut) ou 'asynchrone'", 'command': 'str - la commande shell a executer'},
+        "parameters": {'mode': "str - 'synchrone' (defaut) ou 'asynchrone'", 'command': 'str - la commande shell a executer', 'timeout': 'int - timeout en SECONDES (min 10, max 600, defaut 120). Optionnel mais recommande; ignore si mode=asynchrone'},
         "handler_method": 'execute_bash',
     },
     {

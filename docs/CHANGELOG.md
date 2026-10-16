@@ -45,6 +45,10 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
   est injoignable, l'UI affiche un bandeau « Backend injoignable » avec un bouton **Réessayer** au lieu
   de masquer l'erreur (corrige l'atterrissage sur une fausse session).
 - Installation Web dans `install.sh` : les dépendances backend sont désormais installées dans le venv.
+- **Filet de sécurité timeout bash** : l'outil `bash` expose un paramètre `timeout` **en secondes**
+  (min 10, max 600, défaut 120). L'agent l'ajuste selon la commande ; toute commande synchrone est
+  désormais bornée et ne peut plus tourner indéfiniment. Les commandes en arrière-plan
+  (`is_background=true`) restent non bornées et renvoient immédiatement un `task_id`.
 
 ### Fichiers clés
 

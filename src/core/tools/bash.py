@@ -39,15 +39,42 @@ class BashOutput:
 
 DESCRIPTION_FULL = """Execute a bash command in a persistent shell session.
 - Commands run in the workspace directory by default.
-- Use is_background=true for long-running commands (dev servers, builds).
-- Background commands return a task_id immediately.
-- Default timeout: 120s foreground, unbounded background.
+- The command is ALWAYS bounded by a timeout so it can never run forever.
+- ALWAYS pick a `timeout` (in SECONDS) that fits the command: small for quick
+  inspection (10-30s), larger for builds/tests/installs (60-600s). Minimum is
+  10 seconds, maximum 600. If omitted, defaults to 120s.
+- Use is_background=true for long-running commands (dev servers, watchers).
+  Background commands are NOT bounded by `timeout` and return a task_id at once.
 - AVOID echo/printf for communication — output text directly instead."""
 
 
-_DEFAULT_TIMEOUT_MS = 120_000
-_MAX_TIMEOUT_MS = 300_000
+_DEFAULT_TIMEOUT_S = 120
+_MIN_TIMEOUT_S = 10
+_MAX_TIMEOUT_S = 600
+
+_MS_PER_SECOND = 1000
+
+# Low-level defaults (the streamed runner works in milliseconds).
+_DEFAULT_TIMEOUT_MS = _DEFAULT_TIMEOUT_S * _MS_PER_SECOND
+_MAX_TIMEOUT_MS = _MAX_TIMEOUT_S * _MS_PER_SECOND
 _BACKGROUND_MAX_RUNTIME = 86400  # 24h
+
+
+def timeout_seconds_to_ms(seconds: Optional[int]) -> int:
+    """Convert a user-supplied timeout in SECONDS to milliseconds.
+
+    The result is always clamped to [MIN_TIMEOUT_S, MAX_TIMEOUT_S] so every
+    foreground command is bounded — no command can run indefinitely. A missing,
+    zero or non-numeric value falls back to the default.
+    """
+    try:
+        value = int(seconds) if seconds is not None else 0
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 0:
+        value = _DEFAULT_TIMEOUT_S
+    value = max(_MIN_TIMEOUT_S, min(_MAX_TIMEOUT_S, value))
+    return value * _MS_PER_SECOND
 
 
 def _make_task_id() -> str:

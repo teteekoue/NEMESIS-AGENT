@@ -100,8 +100,9 @@ class ToolBridge:
                 else:
                     # Foreground: execute and collect all output (no streaming)
                     wd = str(workdir) if not isinstance(workdir, str) else workdir
+                    from src.core.tools.bash import timeout_seconds_to_ms
                     full_output = []
-                    for update in run_bash_streamed(cmd, wd, timeout, cancel_event=self.cancel_event):
+                    for update in run_bash_streamed(cmd, wd, timeout_seconds_to_ms(timeout), cancel_event=self.cancel_event):
                         if "partial" in update:
                             # Accumulate output but don't yield it
                             full_output.append(update["partial"])
