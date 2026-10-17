@@ -58,8 +58,126 @@ class NemesisApp:
         # Stockage des sorties de commandes pour affichage différé
         self._hidden_outputs = {}  # Dict: {output_id: {"command": str, "output": str, "success": bool}}
         self._output_counter = 0  # Compteur pour générer les IDs de sortie
+        self.session_id = None
+        self._session_initialized = False
         # Flag pour gérer l'interruption propre
         self._interrupted = False  # True si l'utilisateur a interrompu la tâche en cours
+
+    def _record_session_message(self, message: Dict[str, Any]):
+        if not self.session_id:
+            return
+        from web.backend import sessions as session_store
+
+        session_store.append_message(self.session_id, message)
+
+    def _start_session(self, session_id: Optional[str] = None):
+        from web.backend import sessions as session_store
+
+        if session_id:
+            session = session_store.get_session(session_id)
+            if session is None:
+                self.console.print(f"[error]Session introuvable : {session_id}[/error]")
+                return False
+            self.session_id = session_id
+            self._session_initialized = bool(session.get("nemapi_initialized"))
+            if hasattr(self.client, "configure_session"):
+                self.client.configure_session(session_id, initialized=self._session_initialized)
+            if hasattr(self.client, "reset_conversation"):
+                self.client.reset_conversation()
+            if hasattr(self.client, "set_conversation"):
+                provider_history = []
+                for message in session.get("messages", []):
+                    kind = message.get("kind")
+                    if kind in {"user", "assistant"}:
+                        provider_history.append({
+                            "role": kind,
+                            "content": message.get("text", ""),
+                        })
+                    elif kind == "tool":
+                        provider_history.append({
+                            "role": "tool_result",
+                            "content": (
+                                f"Tool: {message.get('name', 'outil')}\n"
+                                f"Success: {message.get('success', False)}\n"
+                                f"Output:\n{message.get('output', '')}"
+                            ),
+                        })
+                self.client.set_conversation(provider_history)
+            for message in session.get("messages", []):
+                kind = message.get("kind")
+                if kind == "user":
+                    self.composer.display_user_message(message.get("text", ""))
+                elif kind == "assistant":
+                    self.composer.display_ai_message(message.get("text", ""))
+                elif kind == "tool":
+                    self.composer.display_tool_start(
+                        message.get("name", "outil"),
+                        message.get("params", {}),
+                    )
+                    self.composer.display_tool_result(
+                        {"success": message.get("success", False), "output": message.get("output", "")},
+                        tool_name=message.get("name", "outil"),
+                        duration=message.get("duration"),
+                    )
+            self._prompt_sent = self._session_initialized
+            self._send_system_prompt = not self._session_initialized
+            self.console.print(f"[success]Session reprise : {session.get('title', session_id)}[/success]")
+            return True
+
+        session = session_store.create_session(model=getattr(self.client, "model", ""))
+        self.session_id = session["id"]
+        self._session_initialized = False
+        self._prompt_sent = False
+        if hasattr(self.client, "reset_conversation"):
+            self.client.reset_conversation()
+        if hasattr(self.client, "configure_session"):
+            self.client.configure_session(self.session_id, initialized=False)
+        return True
+
+    def _manage_sessions(self, args: List[str]):
+        from rich.table import Table
+        from web.backend import sessions as session_store
+
+        operation = args[0].lower() if args else "list"
+        if operation == "new":
+            if self._start_session():
+                self.console.print(f"[success]Nouvelle session créée : {self.session_id}[/success]")
+            return
+        if operation == "open":
+            if len(args) < 2:
+                self.console.print("[error]Usage : /sessions open <id>[/error]")
+                return
+            self._start_session(args[1])
+            return
+        if operation == "delete":
+            if len(args) < 2:
+                self.console.print("[error]Usage : /sessions delete <id>[/error]")
+                return
+            if not session_store.delete_session(args[1]):
+                self.console.print("[error]Session introuvable.[/error]")
+                return
+            self.console.print("[success]Session supprimée de la liste.[/success]")
+            if args[1] == self.session_id:
+                self._start_session()
+            return
+        if operation != "list":
+            self.console.print("[dim]Usage : /sessions [list|new|open <id>|delete <id>][/dim]")
+            return
+
+        table = Table(title="Conversations", box=box.ROUNDED, expand=True)
+        table.add_column("Active", width=7)
+        table.add_column("ID", style="dim", width=14)
+        table.add_column("Titre")
+        table.add_column("Messages", justify="right")
+        for session in session_store.list_sessions():
+            table.add_row(
+                "●" if session["id"] == self.session_id else "",
+                session["id"],
+                session["title"],
+                str(session["message_count"]),
+            )
+        self.console.print(table)
+        self.console.print("[dim]/sessions new · /sessions open <id> · /sessions delete <id>[/dim]")
 
     def _load_config(self):
         from src.core.paths import resolve_workspace, DEFAULT_WORKSPACE
@@ -130,6 +248,7 @@ class NemesisApp:
                     to_save.pop(mcp_key, None)
         with open(self.config_path, "w", encoding="utf-8") as f:
             yaml.dump(to_save, f, default_flow_style=False, allow_unicode=True)
+        self.config_path.chmod(0o600)
 
     def reconfigure_provider(self, new_config: Dict[str, Any]):
         """Reconfigure NEMAPI a chaud (appelee par /config)."""
@@ -215,6 +334,8 @@ class NemesisApp:
         """Ask the user to authorize a tool call. Returns True if allowed."""
         if risk == "read":
             return True
+        if self.config.get("security", {}).get("approval_mode", "confirm") == "all":
+            return True
         if tool_name in self._authorized_tools:
             return True
 
@@ -282,9 +403,15 @@ class NemesisApp:
             if not normalized or normalized in {"n", "non", "no"}:
                 self._send_system_prompt = False
                 self._prompt_sent = True
+                client = getattr(self, "client", None)
+                if getattr(self, "session_id", None) and hasattr(client, "configure_session"):
+                    self.client.configure_session(self.session_id, initialized=True)
                 return
             if normalized in {"o", "oui", "y", "yes"}:
                 self._send_system_prompt = True
+                client = getattr(self, "client", None)
+                if getattr(self, "session_id", None) and hasattr(client, "configure_session"):
+                    self.client.configure_session(self.session_id, initialized=False)
                 return
             self.console.print("[dim]Répondez par o (oui) ou n (non).[/dim]")
 
@@ -316,14 +443,20 @@ class NemesisApp:
 
         # Afficher le message de l'utilisateur en bulle
         self.composer.display_user_message(message)
+        message_at = time.time()
+        self._record_session_message({"kind": "user", "text": message, "at": message_at})
+        if self.session_id:
+            from web.backend import sessions as session_store
+
+            session = session_store.get_session(self.session_id)
+            if session and session.get("title") == "Nouvelle conversation":
+                session_store.set_title(self.session_id, message.strip()[:64] or "Nouvelle conversation")
 
         current_input = message
         current_role = "user"
         iteration = 0
         max_tool_iterations = 50
-        last_tool_name = None
         last_response_hash = None
-        start_time = time.time()
 
         while iteration < max_tool_iterations:
             # Vérifier si interruption demandée
@@ -341,6 +474,7 @@ class NemesisApp:
                 "NEMESIS is thinking..." if iteration == 1 else "analyzing result..."
             )
             next(anim)  # start spinner
+            prompt_sent_this_turn = bool(system_prefix)
             try:
                 try:
                     result = self.client.send_message(
@@ -365,6 +499,11 @@ class NemesisApp:
             if not result['success']:
                 self.console.print(f"[error]Erreur: {result.get('error', 'inconnu')}[/error]")
                 break
+            if prompt_sent_this_turn and self.session_id:
+                from web.backend import sessions as session_store
+
+                session_store.mark_initialized(self.session_id)
+                self._session_initialized = True
 
             raw_response = result.get('response', '')
             parsed = self._parse_response(raw_response)
@@ -390,6 +529,11 @@ class NemesisApp:
             if response_hash == last_response_hash and iteration > 1:
                 if parsed['text'] and not parsed['text'].startswith("FEEDBACK:"):
                     self.composer.display_ai_message(parsed['text'])
+                    self._record_session_message({
+                        "kind": "assistant",
+                        "text": parsed["text"],
+                        "at": time.time(),
+                    })
                 break
             last_response_hash = response_hash
 
@@ -397,6 +541,11 @@ class NemesisApp:
             display_text = parsed['text']
             if display_text and not display_text.startswith("FEEDBACK:"):
                 self.composer.display_ai_message(display_text)
+                self._record_session_message({
+                    "kind": "assistant",
+                    "text": display_text,
+                    "at": time.time(),
+                })
 
             # --- No action = end of cycle ---
             actions = parsed.get("actions") or ([parsed["action"]] if parsed.get("action") else [])
@@ -406,7 +555,7 @@ class NemesisApp:
             for action in actions:
                 act_type = action['type']
                 act_content = action.get('content', {})
-                last_tool_name = act_type
+
                 risk = self.executor.risk_for(act_type, act_content) if hasattr(self.executor, "risk_for") else "medium"
                 if not self._ask_for_authorization(act_type, act_content, risk):
                     self.console.print(f"[red] Exécution de l'outil '{act_type}' refusée.[/red]")
@@ -415,6 +564,7 @@ class NemesisApp:
 
                 self.composer.display_tool_start(act_type, act_content if isinstance(act_content, dict) else {})
                 final_res = {}
+                tool_started = time.time()
                 for update in self.executor.execute_tool(act_type, act_content):
                     if self._interrupted:
                         self._interrupted = False
@@ -464,7 +614,24 @@ class NemesisApp:
                         final_res = dict(final_res)
                         final_res["output_id"] = output_id
                         final_res["output_path"] = output_path
-                    self.composer.display_tool_result(final_res, tool_name=act_type)
+                    tool_duration = time.time() - tool_started
+                    self.composer.display_tool_result(
+                        final_res, tool_name=act_type, duration=tool_duration
+                    )
+                    self._record_session_message({
+                        "kind": "tool",
+                        "name": act_type,
+                        "params": act_content,
+                        "success": bool(final_res.get("success", False)),
+                        "output": str(
+                            final_res.get("output")
+                            or final_res.get("stdout")
+                            or final_res.get("error")
+                            or ""
+                        ),
+                        "duration": round(tool_duration, 2),
+                        "at": time.time(),
+                    })
                     if act_type == "todo" and final_res.get("items") is not None:
                         self.composer.display_todo(final_res["items"])
                 batch_feedback.append(self._format_feedback(action, final_res))
@@ -475,9 +642,6 @@ class NemesisApp:
 
         if iteration >= max_tool_iterations:
             self.console.print(f"[error]Limite de {max_tool_iterations} iterations d'outils atteinte. Arret du cycle.[/error]")
-
-        elapsed = time.time() - start_time
-        self.composer.display_task_summary(elapsed, tool_count=iteration - 1)
 
     def run(self):
         self.session_start = time.time()
@@ -499,20 +663,19 @@ class NemesisApp:
         if hasattr(self.executor, "registry") and self.executor.registry:
             extra_tools = set(self.executor.registry._tools.keys())
             self.parser = ActionParser(extra_valid_tools=extra_tools)
-        
+
         src.core.default_commands.set_active_app(self)
+        self._start_session()
 
         self.console.clear()
 
         # Provider info for welcome
         provider_type = self.config['provider']['type']
-        host = getattr(self.client, "host", None)
-        port = getattr(self.client, "port", None)
-        host_info = (
-            f"{host}:{port}"
-            if host and port
-            else getattr(self.client, "base_url", "—")
-        )
+        host_info = getattr(self.client, "base_url", None)
+        if not host_info:
+            host = getattr(self.client, "host", None)
+            port = getattr(self.client, "port", None)
+            host_info = f"{host}:{port}" if host and port else "—"
         workspace = self.config.get("security", {}).get("workspace", "")
 
         # Modern welcome screen

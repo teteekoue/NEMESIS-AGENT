@@ -77,6 +77,7 @@ class NemapiV3Provider(BaseProvider):
             or self.provider_config.get("model")
             or self.DEFAULT_MODEL
         )
+        self.api_token = str(nv3_cfg.get("token") or "").strip()
         
         self._models_cache: List[Dict[str, Any]] = []
         
@@ -125,7 +126,7 @@ class NemapiV3Provider(BaseProvider):
             self.base_url + "/",
         ):
             try:
-                resp = getter(probe, timeout=3)
+                resp = getter(probe, timeout=3, headers=self._auth_headers())
                 if resp.status_code < 500:
                     ok = True
                     break
@@ -144,7 +145,11 @@ class NemapiV3Provider(BaseProvider):
         d'une simple réponse vide.
         """
         getter = self._session.get if self._session is not None else self.req.get
-        resp = getter(f"{self.base_url}/v1/models", timeout=10)
+        resp = getter(
+            f"{self.base_url}/v1/models",
+            timeout=10,
+            headers=self._auth_headers(),
+        )
         resp.raise_for_status()
         data = resp.json()
         raw_models = data.get("data", data) if isinstance(data, dict) else data
@@ -332,7 +337,7 @@ class NemapiV3Provider(BaseProvider):
                 result["resp"] = poster(
                     f"{self.base_url}/v1/chat/completions",
                     json=payload,
-                    headers={"Content-Type": "application/json"},
+                    headers={"Content-Type": "application/json", **self._auth_headers()},
                     timeout=(10, self.timeout),
                 )
             except Exception as exc:  # noqa: BLE001
@@ -349,6 +354,11 @@ class NemapiV3Provider(BaseProvider):
         if "exc" in result:
             raise result["exc"]
         return result.get("resp")
+
+    def _auth_headers(self) -> Dict[str, str]:
+        if not self.api_token:
+            return {}
+        return {"Authorization": f"Bearer {self.api_token}"}
 
     def _extract_reply(self, data: Any) -> str:
         """Extrait le texte assistant, y compris tool_calls sérialisés."""

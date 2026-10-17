@@ -35,7 +35,7 @@ dev = [
 ]
 
 [project.scripts]
-nemesis = "agent:main"
+nemesis = "cli:main"
 nemesis-cli = "cli:main"
 nemesis-bot = "telegram_bot:main"
 nemesis-web = "web.backend.__main__:main"
@@ -87,6 +87,9 @@ packages = [
 ]
 "tools_library/systematic-debugging" = [
     "tools_library/systematic-debugging/SKILL.md"
+]
+"tools_library/cybersecurity-audit" = [
+    "tools_library/cybersecurity-audit/SKILL.md"
 ]
 "tools_library/verification-before-completion" = [
     "tools_library/verification-before-completion/SKILL.md"

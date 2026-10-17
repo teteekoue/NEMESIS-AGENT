@@ -172,8 +172,8 @@ class Composer:
     def display_tool_start(self, tool_name: str, params: dict):
         self.chat.tool_start(tool_name, params)
 
-    def display_tool_result(self, result: dict, tool_name: str = ""):
-        self.chat.tool_result(result, tool_name)
+    def display_tool_result(self, result: dict, tool_name: str = "", duration: float | None = None):
+        self.chat.tool_result(result, tool_name, duration)
 
     def display_tool_error(self, error: str):
         self.chat.tool_error(error)

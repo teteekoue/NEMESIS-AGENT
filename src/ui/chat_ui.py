@@ -6,7 +6,6 @@ No emojis. Responsive panels sized to the current terminal width.
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import List, Optional
 
 from rich.console import Console, Group
@@ -70,7 +69,7 @@ class Bubble:
         self.content = content or ""
         self.sender = sender
         self.ts = timestamp or time.time()
-        self.is_user = sender.lower() in ("user", "you")
+        self.is_user = sender.lower() in ("user", "you", "vous")
 
     def render(self, console: Console) -> Panel:
         time_str = time.strftime("%H:%M", time.localtime(self.ts))
@@ -147,6 +146,7 @@ class ChatUI:
         self.console = console or Console()
         self.messages: List[Bubble] = []
         self._last_sender: Optional[str] = None
+        self._pending_tool: Optional[tuple[str, dict]] = None
 
     def add_message(self, content: str, sender: str, timestamp: Optional[float] = None):
         bubble = Bubble(content, sender, timestamp)
@@ -170,42 +170,87 @@ class ChatUI:
             yield
 
     def tool_start(self, tool_name: str, params: dict):
-        """Render one compact, human-readable tool invocation line."""
-        label = _truncate(self._tool_invocation(tool_name, params), _term_width(self.console) - 8)
-        self.console.print(
-            Text.assemble(
-                ("  ", Catppuccin.OVERLAY0),
-                ("◆ ", f"bold {Catppuccin.MAUVE}"),
-                ("tool ", Catppuccin.OVERLAY0),
-                (label, Catppuccin.TEXT),
-            )
-        )
+        """Hold the invocation until its result can be shown on the same line."""
+        self._pending_tool = (tool_name, params if isinstance(params, dict) else {})
 
     def _tool_invocation(self, tool_name: str, params: dict) -> str:
-        """Summarize parameters without dumping a tool schema into the chat."""
+        """Create a short, human-readable action label."""
         params = params if isinstance(params, dict) else {}
-        if tool_name in {"read_file", "read"}:
-            target = params.get("path") or params.get("file_path") or params.get("paths")
-            return f"read {_truncate(str(target or 'file'), 120)}"
-        if tool_name in {"write_file", "write"}:
-            target = params.get("file_path") or params.get("path")
-            return f"write {_truncate(str(target or 'file'), 120)}"
-        if tool_name in {"edit", "search_replace", "replace"}:
-            target = params.get("file_path") or params.get("path")
-            return f"edit {_truncate(str(target or 'file'), 120)}"
-        if tool_name == "delete_file":
-            return f"delete {_truncate(str(params.get('path') or params.get('file_path') or 'file'), 120)}"
+        path = params.get("path") or params.get("file_path") or params.get("filename")
+        command = params.get("command")
+        query = params.get("query") or params.get("pattern") or params.get("url")
+        labels = {
+            "read_file": "Lire",
+            "read": "Lire",
+            "write_file": "Écrire",
+            "write": "Écrire",
+            "edit": "Modifier",
+            "search_replace": "Modifier",
+            "apply_patch": "Appliquer un patch",
+            "delete_file": "Supprimer",
+            "list_dir": "Lister",
+            "glob": "Rechercher des fichiers",
+            "grep": "Rechercher dans les fichiers",
+            "bash": "Terminal",
+            "git": "Git",
+            "web_search": "Recherche Web",
+            "web_fetch": "Ouvrir une page Web",
+            "todo": "Plan",
+            "delegate_tasks": "Déléguer",
+            "subagent_status": "État des sous-agents",
+            "mcp_call": "Outil MCP",
+            "mcp_list": "Serveurs MCP",
+            "mcp_tools_list": "Outils MCP",
+            "skills_list": "Compétences",
+            "memory_search": "Recherche mémoire",
+            "memory_add": "Ajouter à la mémoire",
+            "memory_get": "Lire la mémoire",
+            "memory_update": "Modifier la mémoire",
+            "memory_delete": "Supprimer de la mémoire",
+        }
+        label = labels.get(tool_name, tool_name.replace("_", " ").capitalize())
         if tool_name == "bash":
-            return f"bash  {_truncate(str(params.get('command') or 'command'), 180)}"
-        if tool_name in {"grep", "glob", "list_dir"}:
-            value = params.get("pattern") or params.get("path") or params.get("query") or "*"
-            return f"{tool_name} {_truncate(str(value), 140)}"
-        if tool_name in {"web_search", "web_fetch"}:
-            value = params.get("query") or params.get("url") or ""
-            return f"{tool_name} {_truncate(str(value), 140)}"
-        return f"{tool_name} {_truncate(' '.join(f'{k}={v}' for k, v in params.items()), 140)}".rstrip()
+            value = command
+        elif tool_name in {"grep", "glob", "web_search", "web_fetch"}:
+            value = query or path
+        else:
+            value = path or query
+        if isinstance(value, list):
+            value = ", ".join(str(item) for item in value[:3])
+        if isinstance(value, str) and value.strip():
+            limit = 110 if tool_name == "bash" else 90
+            return f"{label} · {_truncate(value.strip(), limit)}"
+        return label
 
-    def tool_result(self, result: dict, tool_name: str = ""):
+    @staticmethod
+    def _tool_name(tool_name: str) -> str:
+        names = {
+            "read_file": "Lecture fichier",
+            "read": "Lecture fichier",
+            "write_file": "Écriture fichier",
+            "write": "Écriture fichier",
+            "edit": "Modification fichier",
+            "search_replace": "Modification fichier",
+            "apply_patch": "Application du patch",
+            "delete_file": "Suppression fichier",
+            "list_dir": "Liste du dossier",
+            "glob": "Recherche de fichiers",
+            "grep": "Recherche dans les fichiers",
+            "bash": "Terminal",
+            "git": "Git",
+            "web_search": "Recherche Web",
+            "web_fetch": "Page Web",
+            "todo": "Plan",
+            "delegate_tasks": "Délégation",
+            "subagent_status": "État des sous-agents",
+            "mcp_call": "Outil MCP",
+            "mcp_list": "Serveurs MCP",
+            "mcp_tools_list": "Outils MCP",
+            "skills_list": "Compétences",
+        }
+        return names.get(tool_name, tool_name.replace("_", " ").capitalize())
+
+    def tool_result(self, result: dict, tool_name: str = "", duration: float | None = None):
         if hasattr(result, "success"):
             success = bool(result.success)
         elif isinstance(result, dict):
@@ -213,29 +258,43 @@ class ChatUI:
         else:
             success = False
 
+        pending_name, pending_params = self._pending_tool or (tool_name, {})
+        if pending_name != tool_name:
+            pending_params = {}
+        action = self._tool_invocation(tool_name, pending_params)
         color = Catppuccin.GREEN if success else Catppuccin.RED
-        status = "ok" if success else "fail"
-        output = ""
-        if isinstance(result, dict):
-            output = result.get("output") or result.get("stdout") or result.get("error") or ""
-        elif hasattr(result, "output"):
-            output = result.output or ""
-        detail = ""
-        line = Text.assemble(
-            ("  ", Catppuccin.OVERLAY0),
-            ("✓ " if success else "✗ ", f"bold {color}"),
-            (tool_name or "tool", Catppuccin.TEXT),
-            (f" · {status}", Catppuccin.SUBTEXT0),
-        )
-        # OSC-8 links are handled by modern terminals. Bash output is stored in
-        # a local file and the compact status line opens it when clicked.
-        output_path = result.get("output_path") if isinstance(result, dict) else None
-        if tool_name == "bash" and output_path:
-            path = Path(output_path).resolve()
-            # VS Code handles this URI directly with Ctrl/Cmd+click. Other
-            # OSC-8 terminals can still use the standard file URI fallback.
-            line.stylize(f'link "vscode://file{path}"')
-        self.console.print(line)
+        status = "OK" if success else "Échec"
+        row = Text()
+        row.append("  ")
+        row.append("✓ " if success else "✗ ", style=f"bold {color}")
+        row.append(action, style=Catppuccin.TEXT)
+        row.append("   ")
+        row.append(status, style=f"bold {color}")
+        if duration is not None:
+            row.append(f"   {duration:.1f}s", style=Catppuccin.OVERLAY0)
+        self.console.print(row)
+        self._pending_tool = None
+
+        if tool_name == "bash":
+            if isinstance(result, dict):
+                output = result.get("output") or result.get("stdout") or result.get("error") or ""
+            else:
+                output = getattr(result, "output", "") or getattr(result, "error", "")
+            lines = str(output).splitlines()
+            preview = "\n".join(lines[:10])
+            if len(lines) > 10:
+                preview += f"\n… {len(lines) - 10} lignes masquées · /show last"
+            self.console.print(
+                Panel(
+                    Text(preview or "(aucune sortie)", style=Catppuccin.TEXT),
+                    title=Text(" Sortie ", style=f"bold {Catppuccin.SUBTEXT0}"),
+                    title_align="left",
+                    border_style=Catppuccin.SURFACE1,
+                    padding=(0, 1),
+                    width=_content_width(self.console),
+                    box=ROUNDED,
+                )
+            )
 
     def _display_edit_diff(self, result: dict, w: int, color: str, status: str):
         """Affiche un diff structuré pour l'édition."""

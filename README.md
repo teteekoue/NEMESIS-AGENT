@@ -30,6 +30,12 @@ Termux / Android (ARMv7) : voir [TERMUX_INSTALL.md](TERMUX_INSTALL.md).
 
 ```bash
 # CLI
+./venv/bin/python3 cli.py
+
+# Aperçu local de l'interface (aucun appel réseau ou outil exécuté)
+./venv/bin/python3 cli.py --demo
+
+# Alias historique (même interface et même moteur)
 ./venv/bin/python3 agent.py
 
 # CLI (debug)
@@ -66,8 +72,8 @@ provider:
   model: qwen-chat
 
 nemapi:
-  host: 127.0.0.1
-  port: 8090
+  url: http://127.0.0.1:8090/v1
+  token: "" # facultatif ; NEMAPI n'en a généralement pas besoin
 ```
 
 Tout est aussi configurable depuis l'interface Web (onglets Connexion, Général, Mémoire, MCP, Skills, Outils, GitHub, Telegram).
@@ -100,10 +106,28 @@ Mode « toutes autorisations » : agent autonome (défaut du bot Telegram).
 | `/status` | Connexion, modèle, endpoint, workspace |
 | `/models` | Lister / choisir un modèle NEMAPI |
 | `/tools` | Lister les outils |
-| `/config` | Configurer hôte/port NEMAPI |
+| `/config` | Configurer l'URL complète NEMAPI se terminant par `/v1` et son jeton facultatif |
 | `/todo` | Plan de travail courant |
-| `/agents` `/skills` | Sous-agents / compétences |
+| `/agents` | Sous-agents |
 | `/history` `/stats` `/clear` `/exit` | Historique, stats, écran, quitter |
+| `/sessions` | Liste, crée, reprend ou supprime les conversations partagées avec le Web |
+| `/memory` | Consulte et gère la mémoire partagée avec le Web et Telegram |
+| `/approval` | Choisit le mode de confirmation des outils (`confirm` ou `all`) |
+| `/skills` | Consulte, active ou désactive les compétences |
+| `/subagents` | Consulte et configure les profils et limites des sous-agents |
+| `/files` | Explore l’espace de travail |
+| `/integrations` | Consulte ou configure GitHub et Telegram avec saisie masquée des jetons |
+| `/show` | Affiche les sorties complètes des commandes et outils |
+
+Les appels d’outils sont présentés en cartes avec leurs paramètres, leur résultat et leur durée.
+Les conversations CLI utilisent le même stockage durable que l’interface Web : `/sessions new`
+crée un fil, `/sessions open <id>` reprend son transcript et `/sessions delete <id>` l’archive.
+
+La compétence intégrée `cybersecurity-audit` fournit une méthode d’audit défensif et de tests
+réseau autorisés. Elle est désactivée par défaut : dans `/skills`, choisissez l’option 6 puis
+`cybersecurity-audit` pour l’activer pour les nouvelles conversations. Les audits actifs exigent
+un périmètre et une autorisation explicites; les tests destructifs, furtifs ou d’exploitation
+ne sont pas couverts.
 
 ---
 

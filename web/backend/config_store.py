@@ -147,9 +147,10 @@ def workspace_path() -> Path:
 
 
 def public_config() -> Dict[str, Any]:
-    """Shape used by the web UI (no secrets; NEMAPI needs none)."""
+    """Shape used by the web UI without returning the optional NEMAPI token."""
     config = load_config()
-    nemapi = config.get("nemapi", {})
+    nemapi = dict(config.get("nemapi", {}))
+    nemapi.pop("token", None)
     security = config.get("security", {})
     return {
         "provider": config.get("provider", {}),

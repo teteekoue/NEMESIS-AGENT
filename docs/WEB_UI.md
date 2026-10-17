@@ -186,8 +186,9 @@ Base : `/api`. Toutes les réponses sont en JSON.
 | PUT    | `/api/skills` | Active/désactive un skill pour les nouvelles conversations |
 | POST   | `/api/skills/import` | Importe un fichier `SKILL.md` ou une URL GitHub autorisée |
 
-Les skills intégrées (brainstorming, design frontend, Git, diagnostic et
-vérification) sont désactivées par défaut. Une skill activée est ajoutée au
+Les skills intégrées (brainstorming, design frontend, Git, diagnostic,
+vérification et audit de cybersécurité défensif) sont désactivées par défaut.
+Une skill activée est ajoutée au
 prompt de la première requête d'une nouvelle conversation, sans requête
 supplémentaire au provider. L'import GitHub accepte uniquement les URL HTTPS
 `github.com/.../blob/.../SKILL.md` et `raw.githubusercontent.com/.../SKILL.md` ;
