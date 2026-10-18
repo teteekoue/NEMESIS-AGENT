@@ -1,60 +1,111 @@
 # NEMESIS-CLI
 
-Agent IA autonome pour Linux : lit, écrit, exécute et automatise, sous votre contrôle.
-Trois surfaces partagent le même moteur et la même mémoire : **CLI**, **Web**, **Telegram**.
+<p align="center">
+  <strong>Agent IA autonome pour l'ingénierie logicielle, la gestion système et l'automatisation sous Linux.</strong>
+</p>
 
-Développé par **Ekoue TETE** (TEJF).
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/Version-2.1.0-green.svg" alt="Version 2.1.0">
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20POSIX%20%7C%20Termux-orange.svg" alt="Platform">
+</p>
 
 ---
 
-## Installation
+## 📌 Présentation
+
+**NEMESIS-CLI** est un assistant et agent IA autonome conçu pour automatiser les tâches d'ingénierie, d'administration système et d'analyse sous Linux. Il propose un moteur d'exécution unifié et une mémoire partagée à travers **trois interfaces distinctes** :
+
+1. **CLI (Ligne de commande)** — Interface riche et interactive développée avec `rich` et `prompt_toolkit`.
+2. **Interface Web (UI)** — Application Web réactive intégrant un chat en streaming, un terminal PTY complet et un explorateur de fichiers (FastAPI + React/Vite).
+3. **Bot Telegram** — Contrôle à distance autonome partageant la même mémoire et le même registre d'outils.
+
+Développé par **Ekoue TETE (TEJF)** et distribué sous **licence MIT**.
+
+---
+
+## ✨ Fonctionnalités clés
+
+- 🛠️ **Registre d'outils dynamique** : Plus de 40 outils intégrés pour la manipulation de fichiers (`read`, `write`, `edit`, `apply_patch`), l'exécution de commandes shell (`bash`), la recherche (`glob`, `grep`, `web_search`, `web_fetch`), Git et les requêtes système.
+- 🧠 **Mémoire persistante globale** : Conservation des préférences et contextes clés entre les sessions et partagée instantanément entre CLI, Web et Telegram.
+- 🔌 **Protocole MCP & Intégration GitHub** : Support du *Model Context Protocol* (MCP) et intégration GitHub via le serveur officiel (`@modelcontextprotocol/server-github`).
+- 🤖 **Flotte de sous-agents éphémères** : Délégation de tâches complexes à des sous-agents exécutés en parallèle via toute API OpenAI-compatible.
+- 🔐 **Sécurité & Contrôle granulaire** : Validation interactive des actions sensibles (`y` pour autoriser une fois, `n` pour refuser, `a` pour autoriser toute la session) ou mode autonome complet.
+- 🛡️ **Compétences spécialisées (Skills)** : Intégration de compétences à la demande, telles que l'audit de cybersécurité défensive (`cybersecurity-audit`), le débogage systématique ou le workflow Git.
+
+---
+
+## 🚀 Installation
+
+### Prérequis
+
+- **Python** 3.10 ou supérieur
+- **Node.js** 18+ & **npm** (pour l'interface Web et l'intégration GitHub MCP)
+- **Git** et **curl**
+
+### Installation rapide
 
 ```bash
+# Cloner le dépôt
 git clone https://github.com/teteekoue/NEMESIS-AGENT.git
 cd NEMESIS-AGENT
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
+
+# Rendre le script d'installation exécutable et lancer
+chmod +x install.sh
+./install.sh
 ```
 
-Installation automatique (venv + dépendances + dépendances Web optionnelles) :
+### Installation manuelle
 
 ```bash
-chmod +x install.sh && ./install.sh
+# Création et activation de l'environnement virtuel
+python3 -m venv venv
+source ./venv/bin/activate
+
+# Installation des dépendances Python
+pip install -r requirements.txt
 ```
 
-Termux / Android (ARMv7) : voir [TERMUX_INSTALL.md](TERMUX_INSTALL.md).
+> **Android / Termux** : Consultez le guide dédié [TERMUX_INSTALL.md](TERMUX_INSTALL.md).
 
 ---
 
-## Lancer
+## 💻 Utilisation
+
+### 1. Interface en ligne de commande (CLI)
 
 ```bash
-# CLI
+# Lancer la CLI NEMESIS
 ./venv/bin/python3 cli.py
 
-# Aperçu local de l'interface (aucun appel réseau ou outil exécuté)
+# Mode aperçu/démonstration local (sans appel réseau ni exécution d'outils)
 ./venv/bin/python3 cli.py --demo
 
-# Alias historique (même interface et même moteur)
-./venv/bin/python3 agent.py
-
-# CLI (debug)
+# Mode débogage
 ./venv/bin/python3 agent.py --debug
+```
 
-# Interface Web (backend + frontend)
+### 2. Interface Web (UI)
+
+Pour démarrer le backend FastAPI et le frontend React :
+
+```bash
 ./web/start.sh
 ```
 
-Ports Web : backend `8000` (`NEMESIS_WEB_PORT`), frontend `5173` (`NEMESIS_FRONTEND_PORT`).
-Le backend FastAPI sert aussi le build React s'il existe (`web/frontend/dist`).
+Par défaut, l'interface Web est accessible aux adresses suivantes :
+- **Backend API** : `http://localhost:8000`
+- **Frontend Vite** : `http://localhost:5173`
+
+Pour un déploiement « tout-en-un » servi par FastAPI sur un port unique :
 
 ```bash
-# Web « tout-en-un » (un seul port)
 cd web/frontend && npm ci && npm run build
-cd ../.. && ./venv/bin/python3 -m web.backend   # API + UI sur http://localhost:8000
+cd ../.. && ./venv/bin/python3 -m web.backend
 ```
 
-Bot Telegram :
+### 3. Bot Telegram
 
 ```bash
 ./run_telegram_bot.sh
@@ -62,9 +113,9 @@ Bot Telegram :
 
 ---
 
-## Configuration
+## ⚙️ Configuration
 
-Fichier principal `config.yaml` (ou `~/.config/nemesis-cli/config.yaml`) :
+Le fichier de configuration principal est situé dans `config.yaml` (ou dans `~/.config/nemesis-cli/config.yaml`) :
 
 ```yaml
 provider:
@@ -73,150 +124,90 @@ provider:
 
 nemapi:
   url: http://127.0.0.1:8090/v1
-  token: "" # facultatif ; NEMAPI n'en a généralement pas besoin
+  token: "" # Optionnel selon votre déploiement NEMAPI
 ```
 
-Tout est aussi configurable depuis l'interface Web (onglets Connexion, Général, Mémoire, MCP, Skills, Outils, GitHub, Telegram).
+### Configuration via l'interface Web
 
-- Mémoire persistante : `~/.config/nemesis-cli/memory/` — partagée CLI/Web/Telegram
-- GitHub : `~/.config/nemesis-cli/github.yaml` — génère un serveur **MCP** officiel
-- Telegram : `~/.config/nemesis-cli/telegram_bot.yaml`
+L'ensemble des paramètres (Connexion provider, Mémoire persistante, Serveurs MCP, GitHub PAT, Bot Telegram, Sous-agents et Compétences) est entièrement configurable depuis les onglets de réglages de l'interface Web.
 
----
+### Fichiers de données et persistance
 
-## Autorisation
-
-Avant chaque outil sensible :
-
-| Touche | Effet |
-| --- | --- |
-| `y` | Autoriser une fois |
-| `n` | Refuser |
-| `a` | Autoriser pour toute la session |
-
-Mode « toutes autorisations » : agent autonome (défaut du bot Telegram).
+- **Configuration globale** : `~/.config/nemesis-cli/config.yaml`
+- **Mémoire persistante** : `~/.config/nemesis-cli/memory/`
+- **Intégration GitHub** : `~/.config/nemesis-cli/github.yaml`
+- **Configuration Telegram** : `~/.config/nemesis-cli/telegram_bot.yaml`
+- **Configuration MCP** : `~/.config/nemesis-cli/mcp_config.yaml`
 
 ---
 
-## Commandes slash
+## 🕹️ Commandes Slash (CLI)
 
 | Commande | Description |
-| --- | --- |
-| `/help` | Aide |
-| `/status` | Connexion, modèle, endpoint, workspace |
-| `/models` | Lister / choisir un modèle NEMAPI |
-| `/tools` | Lister les outils |
-| `/config` | Configurer l'URL complète NEMAPI se terminant par `/v1` et son jeton facultatif |
-| `/todo` | Plan de travail courant |
-| `/agents` | Sous-agents |
-| `/history` `/stats` `/clear` `/exit` | Historique, stats, écran, quitter |
-| `/sessions` | Liste, crée, reprend ou supprime les conversations partagées avec le Web |
-| `/memory` | Consulte et gère la mémoire partagée avec le Web et Telegram |
-| `/approval` | Choisit le mode de confirmation des outils (`confirm` ou `all`) |
-| `/skills` | Consulte, active ou désactive les compétences |
-| `/subagents` | Consulte et configure les profils et limites des sous-agents |
-| `/files` | Explore l’espace de travail |
-| `/integrations` | Consulte ou configure GitHub et Telegram avec saisie masquée des jetons |
-| `/show` | Affiche les sorties complètes des commandes et outils |
-
-Les appels d’outils sont présentés en cartes avec leurs paramètres, leur résultat et leur durée.
-Les conversations CLI utilisent le même stockage durable que l’interface Web : `/sessions new`
-crée un fil, `/sessions open <id>` reprend son transcript et `/sessions delete <id>` l’archive.
-
-La compétence intégrée `cybersecurity-audit` fournit une méthode d’audit défensif et de tests
-réseau autorisés. Elle est désactivée par défaut : dans `/skills`, choisissez l’option 6 puis
-`cybersecurity-audit` pour l’activer pour les nouvelles conversations. Les audits actifs exigent
-un périmètre et une autorisation explicites; les tests destructifs, furtifs ou d’exploitation
-ne sont pas couverts.
+| :--- | :--- |
+| `/help` | Affiche l'aide interactive et la liste des commandes. |
+| `/status` | Affiche l'état de la connexion, du modèle, de l'endpoint et du workspace. |
+| `/models` | Liste et permet de basculer entre les modèles disponibles. |
+| `/tools` | Liste les outils enregistrés et leurs paramètres. |
+| `/todo` | Affiche et gère le plan de travail (to-do list) courant. |
+| `/sessions` | Liste, crée, bascule ou supprime les conversations partagées avec le Web. |
+| `/memory` | Consulte et gère la mémoire persistante globale. |
+| `/approval` | Configure le mode d'autorisation des outils (`confirm` ou `all`). |
+| `/skills` | Active, désactive ou consulte les compétences (ex: `cybersecurity-audit`). |
+| `/subagents` | Affiche et configure les sous-agents et leurs limites d'exécution. |
+| `/integrations` | Configure en toute sécurité les jetons GitHub et Telegram. |
+| `/files` | Explore les fichiers de l'espace de travail. |
+| `/config` | Configure l'URL et les identifiants de l'API provider. |
+| `/clear` / `/exit` | Efface l'écran ou quitte l'application. |
 
 ---
 
-## Exemples
+## 📂 Architecture du Projet
 
 ```text
-Lis les fichiers Python dans /home/user/projet
-Ajoute une fonction de tri dans utils.py
-Lance les tests et corrige les erreurs
-Recherche les bonnes pratiques Python asyncio
+NEMESIS-AGENT/
+├── agent.py / cli.py       # Points d'entrée de l'interface CLI
+├── action_parser.py        # Analyseur multi-niveaux des réponses et tool calls IA
+├── tools.py / tools_schema.py # Définition et exécution du registre d'outils
+├── telegram_bot.py         # Bot Telegram
+├── src/
+│   ├── core/               # Moteur principal, mémoire, sous-agents, MCP, handlers d'outils
+│   └── ui/                 # Composants d'affichage CLI Rich
+├── providers/              # Adapteurs pour API LLM (NEMAPI, OpenAI-compatible)
+├── web/
+│   ├── backend/            # API REST FastAPI & WebSockets (chat streaming, PTY terminal)
+│   └── frontend/           # Application SPA React + Vite + TailwindCSS + shadcn/ui
+├── docs/                   # Documentation détaillée (Web UI, Mémoire, GitHub, Subagents, Changelog)
+└── tools_library/          # Modules de compétences spécialisées (Skills)
 ```
 
-Exemple de déclenchement d'outil (le modèle émet du JSON, l'utilisateur valide) :
+---
 
-```json
-{ "tool": "bash", "parameters": { "command": "ls -la" } }
+## 📚 Documentation complémentaire
+
+- [docs/WEB_UI.md](docs/WEB_UI.md) — Documentation complète de l'interface Web et déploiement.
+- [docs/MEMORY.md](docs/MEMORY.md) — Fonctionnement du système de mémoire persistante.
+- [docs/GITHUB.md](docs/GITHUB.md) — Configuration et utilisation de l'intégration GitHub via MCP.
+- [docs/SUBAGENTS.md](docs/SUBAGENTS.md) — Guide d'utilisation et de configuration de la flotte de sous-agents.
+- [docs/CHANGELOG.md](docs/CHANGELOG.md) — Historique des versions et notes de publication.
+- [NEMESIS.md](NEMESIS.md) — Architecture technique détaillée.
+- [TOOL_CALL_FORMATS.md](TOOL_CALL_FORMATS.md) — Spécifications des formats d'appel d'outils.
+
+---
+
+## 📄 Licence
+
+Ce projet est distribué sous la licence **MIT**. Voir le fichier [LICENSE](LICENSE) pour plus de détails.
+
+```text
+Copyright (c) 2024-2026 TEJF - L'Aigle de la Justice / Ekoue TETE
 ```
 
 ---
 
-## Outils
+## 📬 Contact & Support
 
-Registre dynamique partagé par CLI, Web, Telegram et sous-agents.
-
-- **Fichiers** : `read_file`, `write_file`, `edit`, `apply_patch`, `list_dir`, `delete_file`
-- **Shell / processus** : `bash` (synchrone/arrière-plan), `kill_task`, `cleanup_logs`
-- **Recherche** : `glob`, `grep`, `web_search`, `web_fetch`
-- **Mémoire** : `memory_add`, `memory_update`, `memory_search`, `memory_get`, `memory_delete`, `memory_clear`
-- **Planification / sous-agents** : `todo`, `delegate_tasks`, `subagent_status`, `get_task_output`, `skills_list`
-- **MCP** : `mcp_list`, `mcp_tools_list`, `mcp_call`
-- **Git / divers** : `git`
-
-Liste live : `/tools` (CLI) ou onglet **Outils** (Web).
-
-Les sous-agents sont des instances temporaires exécutées en parallèle via une API OpenAI-compatible (Groq par défaut). Configurez leur provider, clé API, modèle et limite de concurrence dans **Réglages → Sous-agents**. Voir [docs/SUBAGENTS.md](docs/SUBAGENTS.md).
-
----
-
-## Mémoire, GitHub, Telegram
-
-- **Mémoire** — blocs durables réinjectés dans le prompt système, partagés entre les trois surfaces. Détails : [docs/MEMORY.md](docs/MEMORY.md).
-- **GitHub** — collez un PAT dans l'onglet GitHub : NEMESIS crée un serveur MCP (`npx -y @modelcontextprotocol/server-github`) et expose les outils GitHub sans alourdir le registre principal. Détails : [docs/GITHUB.md](docs/GITHUB.md).
-- **Telegram** — token configurable depuis le Web ; même moteur, même mémoire, toutes autorisations. Commandes : `/start`, `/help`, `/tools`, `/new`, `/clear`. Raccourcis : `web_search:requête`, `web_fetch:url`, `bash:commande`, `read:fichier`.
-
----
-
-## Interface Web
-
-- Chat en streaming (WebSocket `/ws/chat`), timings par outil et par tour
-- Terminal PTY réel (`/ws/terminal`), explorateur de fichiers du workspace
-- Sessions persistantes, thème clair/sombre, responsive mobile → desktop
-- Réglages : Connexion, Général, Mémoire, MCP, Skills, Outils, GitHub, Telegram
-
-Aperçu fictif sans backend : ouvrir `http://localhost:5173/?demo=1`.
-Si le backend est absent, l'UI affiche un bandeau « Backend injoignable » + **Réessayer**.
-
-Détails : [docs/WEB_UI.md](docs/WEB_UI.md).
-
----
-
-## Dépannage
-
-| Problème | Solution |
-| --- | --- |
-| `ModuleNotFoundError: uvicorn` / proxy `ECONNREFUSED` en boucle | `./web/start.sh` (installe les deps et attend l'API) |
-| Bandeau « Backend injoignable » | Lancer `python -m web.backend` puis **Réessayer** |
-| NEMAPI injoignable en local | Onglet Connexion → « Adresse IP et port » (pas d'URL) → **Tester** |
-| `ModuleNotFoundError: yaml` / `rich` | `./venv/bin/pip install -r requirements.txt` |
-| Provider injoignable | Vérifier `config.yaml` / onglet Connexion |
-
----
-
-## Documentation
-
-- [docs/WEB_UI.md](docs/WEB_UI.md) — Interface Web, API REST/WS, déploiement
-- [docs/MEMORY.md](docs/MEMORY.md) — Mémoire persistante
-- [docs/GITHUB.md](docs/GITHUB.md) — Intégration GitHub (MCP)
-- [docs/CHANGELOG.md](docs/CHANGELOG.md) — Journal des modifications
-- [NEMESIS.md](NEMESIS.md) — Architecture détaillée
-- [TOOL_CALL_FORMATS.md](TOOL_CALL_FORMATS.md) — Formats d'appels d'outils
-
----
-
-## Licence
-
-Open-source — **TEJF / Ekoue TETE**. Voir [LICENSE](LICENSE).
-
-## Contact
-
-- GitHub : [github.com/teteekoue](https://github.com/teteekoue)
-- WhatsApp : +228 98 08 44 42
-- Issues : [github.com/teteekoue/NEMESIS-AGENT/issues](https://github.com/teteekoue/NEMESIS-AGENT/issues)
+- **Auteur** : Ekoue TETE (TEJF)
+- **GitHub** : [@teteekoue](https://github.com/teteekoue)
+- **Signalement de bugs** : [GitHub Issues](https://github.com/teteekoue/NEMESIS-AGENT/issues)
+- **WhatsApp** : +228 98 08 44 42
