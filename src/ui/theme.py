@@ -7,6 +7,13 @@ Utilisation de tokens sémantiques pour faciliter la maintenance.
 from rich.theme import Theme
 from rich.style import Style
 
+# Largeur de contenu : cape pour rester lisible sur grand ecran.
+MAX_CONTENT_WIDTH = 110
+MIN_CONTENT_WIDTH = 40
+
+# Lignes affichees pour une sortie d'outil avant troncature.
+TOOL_OUTPUT_PREVIEW_LINES = 8
+
 # ── Catppuccin Mocha Palette ──────────────────────────
 class Catppuccin:
     BASE      = "#1e1e2e"
@@ -74,6 +81,28 @@ NEMESIS_THEME = Theme({
     "input.prompt":         f"bold {Catppuccin.BLUE}",
     "input.text":           f"{Catppuccin.TEXT}",
     "input.placeholder":    f"{Catppuccin.OVERLAY0}",
+
+    # ── Tool card (v2) ──
+    "tool.name":            f"bold {Catppuccin.PEACH}",
+    "tool.params":          f"{Catppuccin.SUBTEXT0}",
+    "tool.gutter":          f"{Catppuccin.SURFACE1}",
+    "tool.body":            f"{Catppuccin.TEXT}",
+    "tool.dim":             f"{Catppuccin.OVERLAY0}",
+    "tool.ok":              f"bold {Catppuccin.GREEN}",
+    "tool.fail":            f"bold {Catppuccin.RED}",
+
+    # ── Messages (v2) ──
+    "user.label":           f"bold {Catppuccin.GREEN}",
+    "user.gutter":          f"{Catppuccin.GREEN}",
+    "ai.label":             f"bold {Catppuccin.BLUE}",
+    "ai.gutter":            f"{Catppuccin.BLUE}",
+
+    # ── Header (v2) ──
+    "header.brand":         f"bold {Catppuccin.LAVENDER}",
+    "header.meta":          f"{Catppuccin.OVERLAY0}",
+    "header.sep":           f"{Catppuccin.SURFACE1}",
+    "rule":                 f"{Catppuccin.SURFACE0}",
+    "prompt":               f"bold {Catppuccin.BLUE}",
 
     # ── Status indicators ──
     "status.idle":          f"{Catppuccin.SURFACE1}",

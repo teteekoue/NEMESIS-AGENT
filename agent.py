@@ -51,7 +51,9 @@ class NemesisApp:
         self.session_start = 0.0
         self._conn_ok = None
         self._prompt_sent = False
-        self._send_system_prompt = False
+        # Par defaut : nouvelle discussion, le prompt systeme part au premier message.
+        # /continue bascule ce flag a False pour reprendre une session existante.
+        self._send_system_prompt = True
         # Système d'autorisation pour les outils
         self._authorized_tools = set()  # Outils autorisés pour cette session (mode 'a')
         self._last_auth_choice = None  # Dernier choix d'autorisation
@@ -420,6 +422,9 @@ class NemesisApp:
         
         # Réinitialiser le flag d'interruption au début d'un nouveau cycle
         self._interrupted = False
+        cycle_started = time.time()
+        cycle_tools = 0
+        cycle_files: set[str] = set()
 
         # Tester la connexion au premier message si pas encore fait
         if self._conn_ok is None:
@@ -563,8 +568,20 @@ class NemesisApp:
                     continue
 
                 self.composer.display_tool_start(act_type, act_content if isinstance(act_content, dict) else {})
+                cycle_tools += 1
+                if act_type in ("edit", "write_file", "write", "apply_patch", "search_replace"):
+                    target = (act_content or {}).get("path") or (act_content or {}).get("file_path")
+                    if target:
+                        cycle_files.add(str(target))
                 final_res = {}
                 tool_started = time.time()
+                live = None
+                if act_type == "bash":
+                    try:
+                        live = self.composer.live_terminal("bash")
+                        live.__enter__()
+                    except Exception:
+                        live = None
                 for update in self.executor.execute_tool(act_type, act_content):
                     if self._interrupted:
                         self._interrupted = False
@@ -583,10 +600,21 @@ class NemesisApp:
                         except (EOFError, KeyboardInterrupt):
                             pass
                         continue
+                    if live is not None and act_type == "bash":
+                        # Le tool bash streame des lignes sous la cle 'partial'.
+                        partial = update.get("partial")
+                        if partial:
+                            live.add_line(str(partial))
                     if "success" in update or (act_type != "bash" and update):
                         final_res = update
                     if act_type != "bash" and final_res:
                         break
+
+                if live is not None:
+                    try:
+                        live.__exit__(None, None, None)
+                    except Exception:
+                        pass
 
                 if final_res:
                     if act_type == "bash":
@@ -643,6 +671,12 @@ class NemesisApp:
         if iteration >= max_tool_iterations:
             self.console.print(f"[error]Limite de {max_tool_iterations} iterations d'outils atteinte. Arret du cycle.[/error]")
 
+        # Resume discret du tour : duree, outils, fichiers touches.
+        if cycle_tools:
+            self.composer.display_task_summary(
+                time.time() - cycle_started, cycle_tools, len(cycle_files)
+            )
+
     def run(self):
         self.session_start = time.time()
         self.console.clear()
@@ -687,7 +721,8 @@ class NemesisApp:
             connected=None,
         )
 
-        self._ask_system_prompt()
+        # Pas de question interactive : le prompt systeme part automatiquement
+        # au premier message. /continue permet de reprendre sans le renvoyer.
 
         # Ne pas tester la connexion au demarrage — le faire au premier message
         self._conn_ok = None
@@ -701,9 +736,22 @@ class NemesisApp:
                     continue
 
                 if self._consume_input_interrupt():
+                    # _consume_input_interrupt() appelle deja _handle_interrupt().
                     continue
 
-                if not user_input:
+                if user_input is None:
+                    # prompt_input a retourne None : Ctrl+C ou Ctrl+D.
+                    self._handle_interrupt()
+                    continue
+
+                if not user_input.strip():
+                    continue
+
+                if user_input.strip().lower() in ("/exit", "/quit"):
+                    parts = user_input.strip()[1:].split()
+                    cmd = registry.get_command(parts[0].lower())
+                    if cmd:
+                        cmd.handler(parts[1:])
                     continue
 
                 if user_input.startswith("/"):
