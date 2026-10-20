@@ -170,6 +170,24 @@ Journal complet : `docs/CHANGELOG.md`.
 
 ---
 
+## Interface CLI
+
+La couche `src/ui/` a été refondue (branche `ui/v2`, octobre 2026) : messages en gouttière
+sans cadre, cartes d'outils sobres, streaming bash en temps réel, bannière ASCII au démarrage,
+résumé de tour, commande `/continue`, double Ctrl+C pour fermer.
+
+**Documentation complète : [`docs/UI.md`](docs/UI.md)** — principes de design, API de `ChatUI`,
+règles de rendu des outils, points fragiles, commandes de vérification.
+
+À retenir avant de toucher à `src/ui/` :
+
+- `ChatUI.thinking()` doit rester un **générateur** (`next(anim)` / `anim.close()` dans `agent.py`).
+- `TextArea` de prompt_toolkit n'expose que `text`, `document`, `accept_handler` — pas de `.title` ni `.prompt`.
+- `Rich Markdown` n'accepte pas `inline_code_style` (utiliser `inline_code_theme`).
+- Les sorties d'outils sont tronquées à 8 lignes (`TOOL_OUTPUT_PREVIEW_LINES`) et la largeur est capée à 110 colonnes (`MAX_CONTENT_WIDTH`).
+
+---
+
 ## Dépannage courant
 
 | Problème | Solution |
@@ -179,5 +197,5 @@ Journal complet : `docs/CHANGELOG.md`.
 | NEMAPI injoignable en local | Onglet Connexion → « Adresse IP et port » (pas d'URL) → Tester |
 | Provider injoignable | Vérifier `config.yaml` / onglet Connexion |
 
-Docs : `docs/WEB_UI.md`, `docs/MEMORY.md`, `docs/GITHUB.md`, `docs/CHANGELOG.md`, `NEMESIS.md`,
-`TOOL_CALL_FORMATS.md`.
+Docs : `docs/WEB_UI.md`, `docs/UI.md`, `docs/MEMORY.md`, `docs/GITHUB.md`, `docs/CHANGELOG.md`,
+`NEMESIS.md`, `TOOL_CALL_FORMATS.md`.

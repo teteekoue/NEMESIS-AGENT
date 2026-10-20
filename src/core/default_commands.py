@@ -1103,7 +1103,38 @@ def history_command(args=None):
         console.print(f"  [{style}]#{i:03d} {prefix} | {content}[/{style}]")
 
 
+
 @registry.register("a2a", "Alias historique du statut des sous-agents temporaires")
 def a2a_command(args=None):
-    """Affiche le statut des tâches éphémères."""
+    """Affiche le statut des taches ephemeres."""
     agent_status_command(args)
+
+
+@registry.register(
+    "continue",
+    "Poursuit la discussion existante : le prompt systeme ne sera pas renvoye",
+    "/continue",
+)
+def continue_command(args=None):
+    """Bascule la prochaine requete en mode poursuite de discussion."""
+    if not _active_app:
+        console.print("[error]Application non initialisee.[/error]")
+        return
+
+    app = _active_app
+    app._send_system_prompt = False
+    app._prompt_sent = True
+    app._session_initialized = True
+
+    client = getattr(app, "client", None)
+    session_id = getattr(app, "session_id", None)
+    if session_id and client and hasattr(client, "configure_session"):
+        try:
+            client.configure_session(session_id, initialized=True)
+        except Exception:
+            pass
+
+    console.print(
+        "[success]Poursuite de la discussion[/success] "
+        "[dim]- le prompt systeme ne sera pas renvoye au prochain message.[/dim]"
+    )

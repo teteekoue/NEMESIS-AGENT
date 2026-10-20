@@ -64,6 +64,7 @@ class Composer:
         self.console = Console()
         self.chat = ChatUI(self.console)
         self._is_tty = sys.stdin.isatty()
+        self.interrupt_requested = False  # pose par Ctrl+C, consomme par agent.run()
         self._version = version  # compatibility only; never displayed
         if self._is_tty:
             self._init_pt()
@@ -83,7 +84,7 @@ class Composer:
         })
 
         self.input_area = TextArea(
-            prompt=HTML(f" <b><ansicyan>&gt;</ansicyan></b> "),
+            prompt=HTML(f" <b><ansicyan>\u276f</ansicyan></b> "),
             multiline=False,
             wrap_lines=False,
             completer=SlashCompleter(),
@@ -91,12 +92,8 @@ class Composer:
             style=f"bg:{Catppuccin.BASE} fg:{Catppuccin.TEXT}",
         )
 
-        self._frame = Frame(
-            body=self.input_area,
-            title=self.DEFAULT_TITLE,
-            height=3,
-            style=f"bg:{Catppuccin.BASE}",
-        )
+        # Pas de Frame : seule l'indication ❯ est visible, comme dans Codex/Claude.
+        self._frame = self.input_area
 
         # Dynamic menu height: scale with number of commands (min 4, max 16)
         menu_h = min(16, max(4, _command_count() + 1))
@@ -115,8 +112,14 @@ class Composer:
             event.app.exit(result=text)
 
         @kb.add("c-c")
-        @kb.add("c-d")
         def _interrupt(event):
+            # Signaler l'interruption au lieu de quitter silencieusement :
+            # agent.run() decide s'il faut interrompre la tache ou fermer.
+            self.interrupt_requested = True
+            event.app.exit(result=None)
+
+        @kb.add("c-d")
+        def _eof(event):
             event.app.exit(result=None)
 
         @kb.add("escape")
@@ -181,8 +184,8 @@ class Composer:
     def display_thinking(self, message: str = "thinking..."):
         return self.chat.thinking(message)
 
-    def display_task_summary(self, elapsed: float, tool_count: int = 0):
-        self.chat.task_summary(elapsed, tool_count)
+    def display_task_summary(self, elapsed: float, tool_count: int = 0, files_changed: int = 0):
+        self.chat.task_summary(elapsed, tool_count, files_changed)
 
     def display_todo(self, items):
         self.chat.todo_panel(items)
@@ -218,15 +221,15 @@ class Composer:
             except (EOFError, KeyboardInterrupt):
                 return None
 
-        prev_title = self._frame.title
+        if title:
+            # Le prompt de TextArea n'est pas modifiable apres construction :
+            # on affiche l'invite au-dessus, comme une ligne de contexte.
+            self.console.print(Text(" " + title, style="bold " + Catppuccin.BLUE))
         try:
-            if title is not None:
-                self._frame.title = title
             self.input_area.text = placeholder
             result = self.input_app.run()
             return result.strip() if result else None
         except (KeyboardInterrupt, EOFError):
             return None
         finally:
-            self._frame.title = prev_title
             self.input_area.text = ""
