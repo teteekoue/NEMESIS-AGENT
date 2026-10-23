@@ -1,0 +1,8 @@
+VIBE UI LICENSE
+
+Ce fichier accompagne l'interface terminal de NEMESIS-CLI (src/ui).
+Il sert de marqueur de licence pour le package de donnees declare dans
+pyproject.toml ([tool.setuptools.package-data] "src.ui").
+
+Le code de NEMESIS-CLI est distribue sous licence MIT (voir LICENSE).
+Les composants tiers embarques conservent leurs licences respectives.

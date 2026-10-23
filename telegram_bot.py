@@ -71,7 +71,15 @@ AWAITING_BRIDGE_HOST = 4
 AWAITING_NEMAPI_HOST = 5
 
 # Repertoire de stockage des configurations du bot
-BOT_CONFIG_DIR = Path(__file__).parent / "telegram_bot_configs"
+def _resolve_bot_config_dir() -> Path:
+    try:
+        from src.core.paths import USER_CONFIG_DIR
+        return Path(USER_CONFIG_DIR) / "telegram_bot_configs"
+    except Exception:
+        return Path.home() / ".config" / "nemesis-cli" / "telegram_bot_configs"
+
+
+BOT_CONFIG_DIR = _resolve_bot_config_dir()
 
 
 # =============================================================================
@@ -1492,16 +1500,65 @@ def load_bot_config(config_path: str = "telegram_config.yaml") -> Dict[str, Any]
     return merged
 
 
+def _prompt_token_interactive() -> Optional[str]:
+    """Ask for the bot token on first run and persist it in the user config dir."""
+    if not sys.stdin.isatty():
+        return None
+    print("\n=== Configuration initiale du bot Telegram ===")
+    print("Creez un bot via @BotFather puis collez le token ci-dessous.")
+    try:
+        token = input("Token du bot Telegram : ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    if not token:
+        return None
+    try:
+        from src.core.paths import USER_CONFIG_DIR
+        config_dir = Path(USER_CONFIG_DIR)
+    except Exception:
+        config_dir = Path.home() / ".config" / "nemesis-cli"
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+        import yaml
+        overlay = config_dir / "telegram_bot.yaml"
+        data = {}
+        if overlay.exists():
+            with open(overlay, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+                if isinstance(loaded, dict):
+                    data = loaded
+        data["token"] = token
+        with open(overlay, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+        try:
+            os.chmod(overlay, 0o600)
+        except OSError:
+            pass
+        print(f"[OK] Token enregistre dans {overlay}")
+    except Exception as exc:
+        print(f"[AVERTISSEMENT] Impossible d'enregistrer le token : {exc}")
+    return token
+
+
 def main():
     """Point d'entree principal."""
     config = load_bot_config()
     token = os.getenv('TELEGRAM_BOT_TOKEN') or config.get('token')
     workspace = config.get('workspace', './workspace')
-    
+
+    if not token:
+        token = _prompt_token_interactive()
+        if token:
+            config['token'] = token
+
     if not token:
         print("[ERROR] Erreur: Token Telegram manquant!")
-        print("   Definissez TELEGRAM_BOT_TOKEN ou creez telegram_config.yaml")
+        print("   Definissez TELEGRAM_BOT_TOKEN ou lancez nemesis-bot en interactif")
         sys.exit(1)
+
+    if config.get('workspace'):
+        workspace = config['workspace']
     
     bot = NemesisTelegramBot(token=token, workspace=workspace, default_config=config)
     
