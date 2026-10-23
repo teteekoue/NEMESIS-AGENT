@@ -808,7 +808,9 @@ class A2AAgentClient:
             return
         self._system_prompt_loaded = True
         content = DEFAULT_SUBAGENT_SYSTEM
-        p_path = Path("agent_subordinate_prompt.txt")
+        p_path = Path(__file__).resolve().parent.parent / "prompts" / "agent_subordinate_prompt.txt"
+        if not p_path.exists():
+            p_path = Path("agent_subordinate_prompt.txt")
         if p_path.exists():
             try:
                 content = p_path.read_text(encoding="utf-8")

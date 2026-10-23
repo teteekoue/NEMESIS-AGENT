@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nemesis-cli"
-version = "2.1.0"
-description = "Autonomous coding and system engineering agent CLI with Web UI, memory and GitHub integration"
+version = "2.2.0"
+description = "Autonomous coding and system engineering agent CLI with Telegram bot, memory and GitHub integration"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -21,7 +21,10 @@ dependencies = [
     "jinja2>=3.0.0",
     "ddgs>=9.0.0",
     "markdownify>=0.11.0",
-    "python-telegram-bot>=20.0"
+    "beautifulsoup4>=4.12.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.0.0",
+    "python-telegram-bot>=20.0",
 ]
 
 [project.optional-dependencies]
@@ -38,7 +41,6 @@ dev = [
 nemesis = "cli:main"
 nemesis-cli = "cli:main"
 nemesis-bot = "telegram_bot:main"
-nemesis-web = "web.backend.__main__:main"
 
 [tool.setuptools]
 py-modules = [
@@ -58,8 +60,6 @@ packages = [
     "src.core",
     "src.core.tools",
     "providers",
-    "web",
-    "web.backend"
 ]
 
 [tool.setuptools.package-data]
