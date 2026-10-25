@@ -219,6 +219,7 @@ Détails : [docs/WEB_UI.md](docs/WEB_UI.md).
 | NEMAPI injoignable en local | Onglet Connexion → « Adresse IP et port » (pas d'URL) → **Tester** |
 | `ModuleNotFoundError: yaml` / `rich` | `./venv/bin/pip install -r requirements.txt` |
 | Provider injoignable | Vérifier `config.yaml` / onglet Connexion |
+| Après un `git pull`, l'agent se comporte comme avant | `python cli.py --check` : affiche OK/ÉCHEC des correctifs **et** le chemin des modules réellement chargés. Si les chemins pointent vers un paquet installé (`site-packages`), `git pull` ne met pas à jour cette copie : `./venv/bin/pip install --force-reinstall .` (ou lancer le CLI depuis le dépôt). Si un serveur Web / bot Telegram tourne, il doit être **redémarré** : Python charge le code au démarrage. |
 
 ---
 

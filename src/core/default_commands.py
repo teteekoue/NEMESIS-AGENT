@@ -272,6 +272,14 @@ def status_command(args=None):
     table.add_row("Session", getattr(_active_app, "session_id", None) or "—")
     table.add_row("Autorisation", _active_app.config.get("security", {}).get("approval_mode", "confirm"))
     table.add_row("Messages", str(MESSAGE_COUNT))
+    try:
+        from src.core.selfcheck import _package_version, code_origin
+
+        origin_kind, origin_dir = code_origin()
+        table.add_row("Version", _package_version())
+        table.add_row("Code", f"{origin_kind} — {origin_dir}")
+    except Exception:  # noqa: BLE001 - informational only
+        pass
     fleet = getattr(getattr(_active_app, "executor", None), "subagent_fleet", None)
     if fleet is not None and hasattr(fleet, "availability"):
         state = fleet.availability()

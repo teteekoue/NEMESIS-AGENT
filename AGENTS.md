@@ -175,6 +175,8 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
 - `apply_patch` : moteur d'application intégré (aucune dépendance au cwd), `workdir`, chemins
   absolus, multi-hunks/multi-fichiers, création/suppression, `dry_run`, erreurs explicites.
 - Exécuteur historique (`tools.py`) aligné : alias `path`/`file_path`, `cd` persistant, exit code.
+- `nemesis --check` : auto-vérification des correctifs + chemin des modules chargés
+  (distingue un correctif absent d'un paquet installé obsolète ou d'un serveur non redémarré).
 - Docs `Non publié` : voir `docs/CHANGELOG.md`.
 
 ### Interface Web, Mémoire, GitHub, Performance
