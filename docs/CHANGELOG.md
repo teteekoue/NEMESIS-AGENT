@@ -55,6 +55,19 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
   (ligne `Delegation`) et dans `GET /api/subagents` (`delegation`) : plus de
   découverte tardive d'une délégation indisponible.
 
+### Diagnostic de mise à jour — `nemesis --check`
+
+- Nouvelle commande `nemesis --check` (alias `--selftest`, module `src/core/selfcheck.py`) :
+  rejoue les six scénarios corrigés (`write_file` avec `path`, refus propre sans chemin,
+  `cd` persistant, `apply_patch` absolu et avec `workdir`, exit code/stderr) et affiche
+  le **chemin des modules réellement chargés**.
+- Objectif : distinguer un correctif absent d'un correctif présent mais non chargé —
+  cas fréquent après un `git pull` quand le CLI tourne depuis un paquet installé
+  (`site-packages`, `dist-packages`, installation utilisateur) ou qu'un serveur Web /
+  bot Telegram a été démarré avant la mise à jour.
+- `/status` affiche désormais `Version` et `Code` (dépôt ou paquet, avec le chemin).
+- Codes de retour : `0` si tout passe, `1` sinon (utilisable dans un script).
+
 ### Deuxième passe — rapport « Limites des outils et du système » (§7.2)
 
 - **`write_file` / `path`** : les alias `path`, `file_path`, `filename` et `file` sont
