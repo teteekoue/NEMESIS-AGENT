@@ -51,6 +51,36 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
 - Sans clé dédiée, `SubagentFleet` réutilise automatiquement le provider principal
   (`availability()` = `main-provider`) au lieu d'échouer avec « aucune clé API ».
 - Les résultats d'outils complets sont transmis aux workers (plus de plafond à 3 appels).
+- Le statut de délégation est affiché dès le démarrage de la CLI, dans `/status`
+  (ligne `Delegation`) et dans `GET /api/subagents` (`delegation`) : plus de
+  découverte tardive d'une délégation indisponible.
+
+### Deuxième passe — rapport « Limites des outils et du système » (§7.2)
+
+- **`write_file` / `path`** : les alias `path`, `file_path`, `filename` et `file` sont
+  normalisés dans **toutes** les couches, y compris l'exécuteur historique
+  (`tools.py::ActionExecutor`) qui levait `TypeError: unexpected keyword argument 'path'`.
+  Un chemin vide n'est plus jamais résolu vers le répertoire courant : la source réelle
+  de `Errno 21 — Is a directory` (`smart_write`) renvoie désormais un message explicite.
+- **`apply_patch`** : réécrit avec un moteur d'application en Python (aucune dépendance au
+  répertoire du process ni aux restrictions de GNU `patch`). Nouveaux comportements :
+  - `workdir`/`cwd` (défaut : répertoire courant persistant du shell) ;
+  - chemins **absolus** acceptés, y compris hors du répertoire de travail — fin de
+    `Ignoring potentially dangerous file name` ;
+  - préfixes `a/`/`b/` retirés progressivement jusqu'à trouver le fichier ;
+  - création (`--- /dev/null`) et suppression (`+++ /dev/null`), multi-hunks et
+    multi-fichiers, mode `dry_run`, correspondance tolérante aux espaces ;
+  - repli automatique sur GNU `patch` dans le répertoire de la cible ;
+  - erreurs explicites (`hunk #2 ... ne correspond à aucune ligne`, `fichier introuvable`).
+- **Shell persistant partout** : `tools.py::execute_bash` délègue à `run_bash`, donc l'exécuteur
+  historique conserve lui aussi le `cd` entre appels (il repartait auparavant du répertoire
+  initial) et remonte exit code, stderr et timeouts comme le chemin moderne.
+- **Arguments JSON tronqués** : une réponse dont les `arguments` ne sont pas un JSON valide
+  produit désormais `Arguments invalides pour '<outil>': ... (réponse probablement tronquée)`
+  au lieu d'un « paramètre manquant » trompeur.
+- **Noms d'outils historiques** : `write`, `append`, `replace`, `read`, `validate`,
+  `kill_process` sont de nouveau traduits par `ToolBridge` (la table d'alias existait mais
+  n'était jamais appelée, d'où `Outil inconnu: append`).
 
 ## [Non publié] — Interface Web, Mémoire, GitHub, Performance
 

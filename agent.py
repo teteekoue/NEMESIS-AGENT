@@ -728,6 +728,20 @@ class NemesisApp:
             connected=None,
         )
 
+        # Delegation status straight away: no more silent unavailability.
+        fleet = getattr(self.executor, "subagent_fleet", None)
+        if fleet is not None and hasattr(fleet, "availability"):
+            state = fleet.availability()
+            if state.get("available"):
+                self.console.print(
+                    f"[dim]Delegation: disponible ({state.get('mode')}) — "
+                    f"{state.get('detail', '')}[/dim]"
+                )
+            else:
+                self.console.print(
+                    f"[yellow]Delegation: indisponible — {state.get('detail', '')}[/yellow]"
+                )
+
         # Pas de question interactive : le prompt systeme part automatiquement
         # au premier message. /continue permet de reprendre sans le renvoyer.
 

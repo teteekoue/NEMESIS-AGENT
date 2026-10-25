@@ -36,10 +36,34 @@ class ActionExecutor:
     # NOUVEAU DISPATCH JSON
     # =====================================================================
     
+    # Alias acceptes pour le chemin du fichier cible, par outil.
+    _PATH_ALIASES = ("file_path", "path", "filename", "file", "target_file")
+
+    def _normalize_parameters(self, tool_name: str, parameters: Dict[str, Any]) -> tuple:
+        """Ramene les alias de chemin sur le nom attendu par le handler.
+
+        Le modele envoie parfois `path` (ou `filename`) la ou le handler attend
+        `file_path` : sans cette normalisation l'appel leve un TypeError et,
+        pire, un chemin vide se resolvait vers le repertoire courant (EISDIR).
+        """
+        params = dict(parameters or {})
+        canonical = {"write": "file_path", "write_file": "file_path", "append": "path", "replace": "path"}
+        target = canonical.get(tool_name)
+        if target:
+            supplied = [alias for alias in self._PATH_ALIASES if params.get(alias)]
+            if supplied:
+                resolved = str(params[supplied[0]]).strip()
+                for alias in self._PATH_ALIASES:
+                    params.pop(alias, None)
+                params[target] = resolved
+            return True, params, ""
+        return True, params, ""
+
     def execute_tool(self, tool_name: str, parameters: Dict[str, Any]):
         """Point d'entree principal : execute un outil a partir d'un appel JSON.
         Remplace l'ancien execute_action(action_type, content)."""
         try:
+            _, parameters, _ = self._normalize_parameters(tool_name, parameters)
             valid, error_msg = validate_tool_call(tool_name, parameters)
             if not valid:
                 yield {"success": False, "stdout": error_msg}
@@ -68,46 +92,65 @@ class ActionExecutor:
     # HANDLERS JSON -> appellent les methodes internes
     # =====================================================================
 
-    def execute_bash(self, mode: str = "synchrone", command: str = ""):
-        """Handler JSON pour l'outil bash."""
+    def execute_bash(self, mode: str = "synchrone", command: str = "", workdir: str = None,
+                     cwd: str = None, timeout: int = None, timeout_ms: int = None,
+                     is_background: bool = None, background: bool = None, **kwargs):
+        """Handler JSON pour l'outil bash.
+
+        Passe par ``run_bash`` : repertoire courant persistant entre appels
+        (le ``cd`` survit), timeouts configurables, exit code et stderr
+        toujours remontes. Les commandes interactives gardent le PTY.
+        """
         async_mode = (mode or "synchrone").lower() in ("asynchrone", "async", "background")
-        if not command or not str(command).strip():
-            yield {"success": False, "stdout": "Commande vide"}
+        if is_background is not None:
+            async_mode = bool(is_background)
+        if background is not None:
+            async_mode = bool(background)
+        command = str(command or "")
+        if not command.strip():
+            yield {"success": False, "stdout": "Commande vide", "exit_code": None}
             return
         if "sudo" in command and "-S" not in command:
             command = command.replace("sudo ", "sudo -S ")
-        # Fast path: simple non-interactive commands (majority of agent use)
         interactive_hints = ("passwd", "ssh ", "mysql", "psql", "python -i", "node", "read ")
         needs_pty = any(h in command for h in interactive_hints) or command.strip().endswith("| less")
-        if async_mode or needs_pty:
+        if needs_pty and not async_mode:
             yield from self.execute_bash_live(command, async_mode)
             return
         try:
-            from src.core.paths import session_cwd
+            from src.core.agent_tools import _make_bash_input
+            from src.core.tools.bash import run_bash
 
-            r = subprocess.run(
+            seconds = timeout
+            milliseconds = timeout_ms
+            bash_input = _make_bash_input(
                 command,
-                shell=True,
-                executable="/bin/bash",
-                cwd=str(session_cwd()),
-                capture_output=True,
-                text=True,
-                timeout=3600,
+                "",
+                seconds if seconds is not None else milliseconds,
+                async_mode,
+                workdir or cwd,
+                timeout_is_ms=seconds is None and milliseconds is not None,
             )
-            out = (r.stdout or "") + (("\n" + r.stderr) if r.stderr else "")
-            if not out.strip():
-                out = f"[no output captured — exit code: {r.returncode}]"
-            yield {"success": r.returncode == 0, "stdout": out,
-                   "output": out, "exit_code": r.returncode, "returncode": r.returncode}
-        except subprocess.TimeoutExpired:
-            yield {"success": False, "stdout": "[TIMEOUT] Commande > 60 minutes", "exit_code": -1, "signal": "timeout"}
+            result = run_bash(bash_input)
+            output = result.output or result.error or ""
+            if not output.strip():
+                output = f"[no output captured — exit code: {result.exit_code}]"
+            yield {
+                "success": bool(result.success),
+                "stdout": output,
+                "output": output,
+                "exit_code": result.exit_code,
+                "returncode": result.exit_code,
+                "error": result.error,
+                "signal": result.signal,
+            }
         except Exception as e:
-            yield {"success": False, "stdout": f"Erreur bash: {e}"}
+            yield {"success": False, "stdout": f"Erreur bash: {e}", "exit_code": None, "error": str(e)}
 
-    def execute_write(self, path: str = None, content: str = None, file_path: str = None):
+    def execute_write(self, path: str = None, content: str = None, file_path: str = None,
+                      filename: str = None, **kwargs):
         """Handler JSON pour l'outil write (ancien format avec path)."""
-        # Gérer les deux formats : path et file_path
-        actual_path = path or file_path
+        actual_path = path or file_path or filename or kwargs.get("file")
         if not actual_path or content is None:
             yield {"success": False, "stdout": "Chemin et contenu requis pour write"}
             return
@@ -118,17 +161,23 @@ class ActionExecutor:
             result["stdout"] += "\n" + syntax_warnings
         yield result
 
-    def execute_write_file(self, file_path: str, content: str):
-        """Handler JSON pour l'outil write_file (nouveau format)."""
+    def execute_write_file(self, file_path: str = None, content: str = None, path: str = None,
+                           filename: str = None, **kwargs):
+        """Handler JSON pour l'outil write_file (nouveau format).
+
+        Accepte file_path, path, filename (et `file`) : le chemin fourni est
+        utilise tel quel, jamais remplace par un repertoire par defaut.
+        """
         if isinstance(content, str):
             # LLM sometimes leaves literal \\n sequences instead of real newlines
             if content.count('\n') <= 1 and ('\\n' in content or (chr(92) + 'n') in content):
                 content = content.replace(chr(92) + 'n', '\n').replace(chr(92) + 't', '\t')
-        yield from self.execute_write(file_path=file_path, content=content)
+        yield from self.execute_write(file_path=file_path or path or filename or kwargs.get("file"),
+                                      content=content)
 
-    def execute_append(self, path: str, content: str):
+    def execute_append(self, path: str = None, content: str = None, file_path: str = None, **kwargs):
         """Handler JSON pour l'outil append."""
-        yield self.smart_write(path, content, "a")
+        yield self.smart_write(path or file_path or kwargs.get("filename"), content, "a")
 
     def _normalize_newlines(self, text: str) -> str:
         """Normalise les retours à la ligne : ne convertit que les \n litteraux restants
@@ -156,12 +205,21 @@ class ActionExecutor:
                         )
         return '\n'.join(warnings) if warnings else ""
 
-    def execute_replace(self, path: str, blocks: list):
+    def execute_replace(self, path: str = None, blocks: list = None, file_path: str = None, **kwargs):
         """Handler JSON pour l'outil replace (ancien format avec blocks)."""
+        raw_path = path or file_path or kwargs.get("filename")
+        if not str(raw_path or "").strip():
+            yield {"success": False, "stdout": "Chemin de fichier requis (path ou file_path)."}
+            return
+        blocks = blocks or []
         try:
-            file_path = self.resolve_path(path)
-            if not file_path.exists():
-                yield {"success": False, "stdout": f"Fichier introuvable: {path}"}
+            resolved = self.resolve_path(raw_path)
+            if resolved.is_dir():
+                yield {"success": False,
+                       "stdout": f"Le chemin est un repertoire, pas un fichier: {resolved}"}
+                return
+            if not resolved.exists():
+                yield {"success": False, "stdout": f"Fichier introuvable: {raw_path}"}
                 return
             
             with open(file_path, "r", encoding="utf-8") as f:
@@ -711,8 +769,20 @@ class ActionExecutor:
 
 
     def smart_write(self, path, content, mode="w"):
+        raw = str(path if path is not None else "").strip()
+        if not raw:
+            return {
+                "success": False,
+                "stdout": "Aucun chemin fourni: indiquez file_path, path ou filename "
+                          "(un chemin vide ne doit jamais designer un repertoire).",
+            }
         try:
-            file_path = self.resolve_path(path)
+            file_path = self.resolve_path(raw)
+            if file_path.is_dir():
+                return {
+                    "success": False,
+                    "stdout": f"Le chemin est un repertoire, pas un fichier: {file_path}",
+                }
             file_path.parent.mkdir(parents=True, exist_ok=True)
             if not content:
                 return {"success": False, "stdout": "Contenu vide - fichier non ecrit"}
@@ -1530,34 +1600,28 @@ class ActionExecutor:
             return
         yield {"success": False, "stdout": f"Action todo inconnue: {action}"}
 
-    def execute_apply_patch(self, patch: str, dry_run: bool = False):
-        """Apply a unified diff. Prefer edit/write_file for simple changes."""
-        if not patch or not str(patch).strip():
+    def execute_apply_patch(self, patch: str = None, dry_run: bool = False, workdir: str = None,
+                            cwd: str = None, diff: str = None, **kwargs):
+        """Apply a unified diff (same engine as the modern registry).
+
+        Paths resolve from `workdir`, then the persistent shell directory;
+        absolute paths are accepted.
+        """
+        from src.core.tools.apply_patch import apply_patch as _apply_patch
+
+        text = patch if patch is not None else diff
+        if not text or not str(text).strip():
             yield {"success": False, "stdout": "patch vide"}
             return
         try:
-            import subprocess, tempfile, os
-            with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False, encoding="utf-8") as f:
-                f.write(patch)
-                patch_path = f.name
-            cmd = ["git", "apply", "--check", patch_path] if dry_run else ["git", "apply", patch_path]
-            r = subprocess.run(cmd, cwd=str(self.workspace_root), capture_output=True, text=True)
-            os.unlink(patch_path)
-            out = (r.stdout or "") + (r.stderr or "")
-            if r.returncode != 0:
-                # Fallback: try patch command
-                with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False, encoding="utf-8") as f:
-                    f.write(patch)
-                    patch_path = f.name
-                cmd2 = ["patch", "-p1", "--dry-run" if dry_run else "-p1"]
-                r2 = subprocess.run(cmd2, cwd=str(self.workspace_root), input=patch, capture_output=True, text=True)
-                os.unlink(patch_path)
-                if r2.returncode != 0:
-                    yield {"success": False, "stdout": f"apply_patch failed:\n{out}\n{r2.stderr}"}
-                    return
-                yield {"success": True, "stdout": r2.stdout or "patch applied"}
-                return
-            yield {"success": True, "stdout": out or ("patch valid" if dry_run else "patch applied")}
+            result = _apply_patch(str(text), str(self.workspace_root), dry_run=dry_run,
+                                  workdir=workdir or cwd)
+            yield {
+                "success": bool(result.success),
+                "stdout": result.message,
+                "output": result.message,
+                "files_touched": result.files_touched,
+            }
         except Exception as e:
             yield {"success": False, "stdout": f"Erreur apply_patch: {e}"}
 

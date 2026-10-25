@@ -172,8 +172,10 @@ Exemple de déclenchement d'outil (le modèle émet du JSON, l'utilisateur valid
 Registre dynamique partagé par CLI, Web, Telegram et sous-agents.
 
 - **Fichiers** : `read_file`, `write_file`, `edit`, `apply_patch`, `list_dir`, `delete_file`
-  (chemins absolus ou relatifs au répertoire courant, sans confinement)
-- **Shell / processus** : `bash` (synchrone/arrière-plan, `cd` persistant, heredocs), `kill_task`, `cleanup_logs`
+  (chemins absolus ou relatifs au répertoire courant, sans confinement ; `write_file` accepte
+  `file_path`, `path` ou `filename` ; `apply_patch` accepte `workdir` et les chemins absolus)
+- **Shell / processus** : `bash` (synchrone/arrière-plan, `cd` persistant, heredocs, `workdir`,
+  timeout 10 s–7 jours), `kill_task`, `cleanup_logs`
 - **Recherche** : `glob`, `grep`, `web_search`, `web_fetch`
 - **Mémoire** : `memory_add`, `memory_update`, `memory_search`, `memory_get`, `memory_delete`, `memory_clear`
 - **Planification / sous-agents** : `todo`, `delegate_tasks`, `subagent_status`, `get_task_output`, `skills_list`

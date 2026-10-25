@@ -495,15 +495,26 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
     registry.register(
         name="apply_patch",
         kind=ToolKind.EDIT,
-        handler=lambda patch, dry_run=False: apply_patch(patch, None, dry_run=dry_run),
+        handler=lambda patch=None, dry_run=False, workdir=None, cwd=None, diff=None, **kwargs: apply_patch(
+            patch if patch is not None else diff,
+            None,
+            dry_run=dry_run,
+            workdir=workdir or cwd,
+        ),
         description=PATCH_DESC,
         params_schema={
             "type": "object",
             "properties": {
                 "patch": {"type": "string", "description": "Unified diff text"},
                 "dry_run": {"type": "boolean", "description": "Validate only, do not write"},
+                "workdir": {
+                    "type": "string",
+                    "description": "Directory the relative paths in the patch resolve from. Defaults to the persistent shell directory.",
+                },
+                "cwd": {"type": "string", "description": "Alias for workdir."},
+                "diff": {"type": "string", "description": "Alias for patch."},
             },
-            "required": ["patch"],
+            "anyOf": [{"required": ["patch"]}, {"required": ["diff"]}],
         },
     )
 

@@ -13,7 +13,7 @@ Trois surfaces partagent le **même moteur**, les **mêmes outils** et la **mêm
 - **Web** — `web/` (backend FastAPI + frontend React/Vite)
 - **Telegram** — `telegram_bot.py` (bot, mémoire partagée)
 
-Développé par **Ekoue TETE** (TEJF). Licence : voir `LICENSE`. Version : `2.2.0` (`pyproject.toml`).
+Développé par **Ekoue TETE** (TEJF). Licence : voir `LICENSE`. Version : `2.2.1` (`pyproject.toml`).
 
 ---
 
@@ -170,7 +170,11 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
   les dossiers parents et renvoient un chemin absolu ; dossier cible = erreur explicite.
 - `bash` : bash comme shell, heredocs/multi-lignes, timeout 10 s–7 jours (défaut 600 s), sortie
   jamais vide (code de sortie explicite), stderr et signal toujours remontés.
-- Sous-agents : repli automatique sur le provider principal quand aucune clé dédiée n'existe.
+- Sous-agents : repli automatique sur le provider principal quand aucune clé dédiée n'existe ;
+  statut de délégation affiché au démarrage, dans `/status` et dans `GET /api/subagents`.
+- `apply_patch` : moteur d'application intégré (aucune dépendance au cwd), `workdir`, chemins
+  absolus, multi-hunks/multi-fichiers, création/suppression, `dry_run`, erreurs explicites.
+- Exécuteur historique (`tools.py`) aligné : alias `path`/`file_path`, `cd` persistant, exit code.
 - Docs `Non publié` : voir `docs/CHANGELOG.md`.
 
 ### Interface Web, Mémoire, GitHub, Performance

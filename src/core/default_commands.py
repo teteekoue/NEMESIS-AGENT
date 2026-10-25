@@ -272,6 +272,11 @@ def status_command(args=None):
     table.add_row("Session", getattr(_active_app, "session_id", None) or "—")
     table.add_row("Autorisation", _active_app.config.get("security", {}).get("approval_mode", "confirm"))
     table.add_row("Messages", str(MESSAGE_COUNT))
+    fleet = getattr(getattr(_active_app, "executor", None), "subagent_fleet", None)
+    if fleet is not None and hasattr(fleet, "availability"):
+        state = fleet.availability()
+        delegation = f"{'oui' if state.get('available') else 'non'} ({state.get('mode', '—')})"
+        table.add_row("Delegation", delegation)
     console.print(table)
 
 
