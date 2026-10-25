@@ -6,6 +6,8 @@ import os
 import re
 import subprocess
 import tempfile
+
+from ..paths import system_base_dir
 from dataclasses import dataclass
 from typing import Optional, List
 
@@ -47,13 +49,14 @@ def apply_patch(patch: str, workspace_dir: str, dry_run: bool = False) -> ApplyP
     except OSError as e:
         return ApplyPatchResult(success=False, message=f"Cannot write temp patch: {e}")
 
+    base_dir = str(system_base_dir())
     try:
         cmd = ["patch", "-p1", "--forward", "--no-backup-if-mismatch", "-i", patch_path]
         if dry_run:
             cmd.insert(1, "--dry-run")
         proc = subprocess.run(
             cmd,
-            cwd=os.getcwd(),
+            cwd=base_dir,
             capture_output=True,
             text=True,
             timeout=60,
@@ -64,7 +67,7 @@ def apply_patch(patch: str, workspace_dir: str, dry_run: bool = False) -> ApplyP
             cmd0 = ["patch", "-p0", "--forward", "--no-backup-if-mismatch", "-i", patch_path]
             if dry_run:
                 cmd0.insert(1, "--dry-run")
-            proc0 = subprocess.run(cmd0, cwd=os.getcwd(), capture_output=True, text=True, timeout=60)
+            proc0 = subprocess.run(cmd0, cwd=base_dir, capture_output=True, text=True, timeout=60)
             out0 = (proc0.stdout or "") + (proc0.stderr or "")
             if proc0.returncode != 0:
                 return ApplyPatchResult(

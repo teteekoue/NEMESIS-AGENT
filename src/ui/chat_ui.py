@@ -141,6 +141,11 @@ class ChatUI:
         else:
             body = ""
 
+        exit_code = (
+            result.get("exit_code")
+            if isinstance(result, dict)
+            else getattr(result, "exit_code", None)
+        )
         card = tool_card(
             name=tool_name or "tool",
             params=self._label(tool_name, pending_params),
@@ -149,6 +154,7 @@ class ChatUI:
             success=success,
             accent=self._accent(tool_name),
             width=content_width(self.console),
+            status_detail=f"exit {exit_code}" if exit_code is not None else "",
         )
         for row in card:
             self.console.print(row)

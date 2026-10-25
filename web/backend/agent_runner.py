@@ -12,6 +12,7 @@ events are marshalled back onto the asyncio loop through a thread-safe queue.
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 import uuid
@@ -21,8 +22,6 @@ from action_parser import ActionParser
 from providers import create_provider
 from tools import create_executor_from_config
 
-MAX_TOOL_ITERATIONS = 50
-MAX_TOOL_CALLS_PER_MESSAGE = 3  # hard ceiling enforced regardless of model output
 AUTHORIZE_TIMEOUT = 600  # seconds to wait for a human decision
 
 # Cache the expensive introspection endpoints (tools catalog) and the
@@ -198,7 +197,9 @@ class AgentRunner:
         last_hash: Optional[int] = None
         tool_count = 0
 
-        while iteration < MAX_TOOL_ITERATIONS:
+        # No iteration ceiling: the turn ends when the model stops calling
+        # tools, when the user interrupts, or when the provider fails.
+        while True:
             if self._interrupt.is_set():
                 self.emit("notice", message="Tour interrompu par l'utilisateur.")
                 break
@@ -272,19 +273,6 @@ class AgentRunner:
             if not actions:
                 break
 
-            # Hard ceiling: never execute more than MAX_TOOL_CALLS_PER_MESSAGE
-            # calls within a single model message, even if the model emitted more.
-            if len(actions) > MAX_TOOL_CALLS_PER_MESSAGE:
-                extra = len(actions) - MAX_TOOL_CALLS_PER_MESSAGE
-                actions = actions[:MAX_TOOL_CALLS_PER_MESSAGE]
-                self.emit(
-                    "notice",
-                    message=(
-                        f"Le modèle a demandé {len(actions) + extra} appels en un seul message ; "
-                        f"seuls les {MAX_TOOL_CALLS_PER_MESSAGE} premiers sont exécutés (limite)."
-                    ),
-                )
-
             batch_feedback: List[str] = []
             for action in actions:
                 if self._interrupt.is_set():
@@ -336,6 +324,7 @@ class AgentRunner:
                     params=act_content,
                     success=bool(final_res.get("success", False)),
                     output=str(output),
+                    exit_code=final_res.get("exit_code"),
                     duration=tool_elapsed,
                 )
                 batch_feedback.append(self._format_feedback(action, final_res))
@@ -347,9 +336,6 @@ class AgentRunner:
             current_input = "FEEDBACK:\n" + "\n\n".join(batch_feedback)
             current_role = "tool_result"
             continue
-
-        if iteration >= MAX_TOOL_ITERATIONS:
-            self.emit("error", message=f"Limite de {MAX_TOOL_ITERATIONS} itérations atteinte.")
 
         return tool_count
 
@@ -386,13 +372,9 @@ class AgentRunner:
 
     @staticmethod
     def _format_feedback(action: Dict[str, Any], res: Dict[str, Any]) -> str:
-        output = res.get("stdout", res.get("content", "")) or ""
-        if not output:
-            output = "[Aucune sortie capturee]"
-        return (
-            f"FEEDBACK:\nTool: {action.get('type', '')}\n"
-            f"Succes: {res.get('success', False)}\nOutput:\n{output}"
-        )
+        from src.core.agent_tools import format_tool_feedback
+
+        return "FEEDBACK:\n" + format_tool_feedback(action.get("type", ""), res)
 
 
 def list_tools(config: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -404,7 +386,7 @@ def list_tools(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     cache_key = str(config.get("security", {}).get("workspace", "")) + "|" + str(
         id(config.get("provider", {}))
-    )
+    ) + "|" + os.getcwd()
     now = time.time()
     if (
         _TOOLS_CACHE["value"] is not None

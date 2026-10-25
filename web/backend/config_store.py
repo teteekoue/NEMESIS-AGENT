@@ -19,7 +19,6 @@ from src.core.paths import (
     config_path,
     ensure_user_dirs,
     resolve_workspace,
-    DEFAULT_WORKSPACE,
 )
 from src.core.subagents import DEFAULT_SUBAGENT_CONFIG
 
@@ -28,7 +27,7 @@ _LOCK = threading.RLock()
 DEFAULT_CONFIG: Dict[str, Any] = {
     "provider": {"type": "nemapi", "model": "qwen-chat"},
     "nemapi": {"host": "127.0.0.1", "port": 8090},
-    "security": {"workspace": str(DEFAULT_WORKSPACE), "approval_mode": "all"},
+    "security": {"workspace": "", "approval_mode": "all"},
 }
 
 
@@ -55,9 +54,9 @@ def _normalize(raw: Dict[str, Any] | None) -> Dict[str, Any]:
         config["nemapi"].pop("url", None)
 
     if not isinstance(config.get("security"), dict):
-        config["security"] = {"workspace": str(DEFAULT_WORKSPACE), "approval_mode": "all"}
-    ws = resolve_workspace(config)
-    config["security"]["workspace"] = str(ws)
+        config["security"] = {"workspace": "", "approval_mode": "all"}
+    # The agent is not sandboxed: an empty workspace means "current directory".
+    config["security"]["workspace"] = str(config["security"].get("workspace") or "")
     mode = str(config["security"].get("approval_mode") or "all").lower()
     config["security"]["approval_mode"] = mode if mode in {"all", "confirm"} else "all"
 
@@ -156,10 +155,10 @@ def public_config() -> Dict[str, Any]:
         "provider": config.get("provider", {}),
         "nemapi": nemapi,
         "mode": "url" if nemapi.get("url") else "local",
-        "workspace": security.get("workspace", ""),
+        "workspace": str(resolve_workspace(config)),
         "model": config.get("provider", {}).get("model", ""),
         "security": {
-            "workspace": security.get("workspace", ""),
+            "workspace": str(resolve_workspace(config)),
             "approval_mode": security.get("approval_mode", "all"),
             "auto_approve_reads": security.get("auto_approve_reads", True),
             "confirm_high_risk": security.get("confirm_high_risk", True),
@@ -218,7 +217,7 @@ def public_subagents_config() -> Dict[str, Any]:
         "profiles": profiles,
         "profile_count": len(profiles),
         "max_concurrent": int(config.get("max_concurrent", 4)),
-        "max_iterations": int(config.get("max_iterations", 12)),
+        "max_iterations": int(config.get("max_iterations", 0)),
         "timeout_seconds": int(config.get("timeout_seconds", 180)),
         "max_retries": int(config.get("max_retries", 3)),
         "max_tokens_per_task": int(config.get("max_tokens_per_task", 24000)),
@@ -397,14 +396,16 @@ def save_subagents_config(data: Dict[str, Any]) -> Dict[str, Any]:
         current["subagents"] = settings
 
     max_concurrent = int(data.get("max_concurrent", 4))
-    max_iterations = int(data.get("max_iterations", 12))
+    max_iterations = int(data.get("max_iterations", 0))
     timeout_seconds = int(data.get("timeout_seconds", 180))
     max_retries = int(data.get("max_retries", 3))
     max_tokens_per_task = int(data.get("max_tokens_per_task", 24000))
     if not 1 <= max_concurrent <= 8:
         raise ValueError("Le nombre de sous-agents simultanés doit être entre 1 et 8.")
-    if not 1 <= max_iterations <= 30:
-        raise ValueError("Le nombre maximal d'itérations doit être entre 1 et 30.")
+    if not 0 <= max_iterations <= 100000:
+        raise ValueError(
+            "Le nombre maximal d'itérations doit être 0 (illimité) ou un entier positif."
+        )
     if not 10 <= timeout_seconds <= 600:
         raise ValueError("Le timeout doit être entre 10 et 600 secondes.")
     if not 0 <= max_retries <= 8:

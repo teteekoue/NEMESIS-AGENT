@@ -1,6 +1,8 @@
 import os
+import shlex
 import subprocess
 import shutil
+import tempfile
 import time
 import signal
 import uuid
@@ -10,6 +12,8 @@ import sys
 import queue
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Generator
+
+from ..paths import resolve_path, session_cwd, set_session_cwd
 
 
 _ACTIVE_PROCESSES: Dict[str, subprocess.Popen] = {}
@@ -38,19 +42,26 @@ class BashOutput:
 
 
 DESCRIPTION_FULL = """Execute a bash command in a persistent shell session.
-- Commands run in the workspace directory by default.
-- The command is ALWAYS bounded by a timeout so it can never run forever.
-- ALWAYS pick a `timeout` (in SECONDS) that fits the command: small for quick
-  inspection (10-30s), larger for builds/tests/installs (60-600s). Minimum is
-  10 seconds, maximum 600. If omitted, defaults to 120s.
+- Any command, any path: the agent is not confined to a workspace.
+- Commands run in the current shell directory, which is shared between calls:
+  a `cd` performed in one call is still active in the next one. Pass `workdir`
+  to run a command somewhere else (relative or absolute path).
+- The command is ALWAYS bounded by a generous timeout so it can never run
+  forever. `timeout` is in SECONDS (default 600). Use 10-30s for quick
+  inspection, 60-3600s for builds/tests/installs; up to one week is accepted.
 - Use is_background=true for long-running commands (dev servers, watchers).
   Background commands are NOT bounded by `timeout` and return a task_id at once.
+- Multi-line commands, heredocs and pipes are supported as-is: send the exact
+  script you want to run, never escape it yourself.
+- Every call returns stdout+stderr and the real exit code, even when empty.
 - AVOID echo/printf for communication — output text directly instead."""
 
 
-_DEFAULT_TIMEOUT_S = 120
+_DEFAULT_TIMEOUT_S = 600
 _MIN_TIMEOUT_S = 10
-_MAX_TIMEOUT_S = 600
+_MAX_TIMEOUT_S = 7 * 24 * 3600  # one week: no practical ceiling
+
+_CWD_TRAILER_MARK = "__NEMESIS_STATUS__"
 
 _MS_PER_SECOND = 1000
 
@@ -81,6 +92,77 @@ def _make_task_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _shell_executable() -> Optional[str]:
+    """Prefer bash when available: richer syntax (heredocs, pipefail, arrays)."""
+    for candidate in ("/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    found = shutil.which("bash")
+    return found or None
+
+
+def resolve_workdir(workdir: Optional[str], fallback: Optional[str] = None) -> str:
+    """Resolve a working directory anywhere on the machine.
+
+    Order: explicit ``workdir``, then ``fallback`` (legacy caller), then the
+    shared shell directory. Relative paths resolve from the shell directory.
+    """
+    raw = str(workdir).strip() if workdir not in (None, "") else ""
+    if raw:
+        return resolve_path(raw)
+    legacy = str(fallback).strip() if fallback not in (None, "") else ""
+    if legacy:
+        return resolve_path(legacy)
+    return str(session_cwd())
+
+
+def _wrap_command(cmd: str) -> tuple[str, Optional[str]]:
+    """Append a trailer that records the final directory of the shell.
+
+    The directory is written to a temp file so the command output is never
+    polluted. The exit status of the user command is preserved.
+    """
+    if not cmd or cmd.rstrip().endswith("\\"):
+        return cmd, None
+    try:
+        fd, cwd_file = tempfile.mkstemp(prefix="nemesis-cwd-", suffix=".txt")
+        os.close(fd)
+    except OSError:
+        return cmd, None
+    trailer = (
+        f"\n{_CWD_TRAILER_MARK}=$?\n"
+        f"printf '%s' \"$PWD\" > {shlex.quote(cwd_file)}\n"
+        f"exit ${_CWD_TRAILER_MARK}\n"
+    )
+    return cmd + trailer, cwd_file
+
+
+def _consume_cwd(cwd_file: Optional[str]) -> None:
+    if not cwd_file:
+        return
+    try:
+        with open(cwd_file, "r", encoding="utf-8", errors="replace") as handle:
+            final_dir = handle.read().strip()
+        if final_dir and os.path.isdir(final_dir):
+            set_session_cwd(final_dir)
+    except OSError:
+        pass
+    finally:
+        try:
+            os.unlink(cwd_file)
+        except OSError:
+            pass
+
+
+def _output_with_status(output: str, exit_code: Optional[int], signal_name: Optional[str] = None) -> str:
+    """Never return a silently empty result: always expose the exit status."""
+    if output.strip():
+        return output
+    if signal_name:
+        return f"[no output captured — signal: {signal_name}]"
+    return f"[no output captured — exit code: {exit_code}]"
+
+
 _SELF_PKILL_RE = re.compile(
     r"(?:^|[;&|\(\n])\s*(pkill|pgrep)((?:\s+-[A-Za-z]*f[A-Za-z]*|\s+--full\b)+)"
     r"\s+(?:'([^']*)'|\"([^\"]*)\"|([^\s;&|()]+))"
@@ -102,37 +184,8 @@ def _detect_self_matching_pkill(command: str) -> Optional[str]:
     return None
 
 
-def _is_noop_command(command: str) -> bool:
-    t = command.strip()
-    return not t or t == "true" or t == ":"
-
-
-def _is_bare_echo(command: str) -> bool:
-    t = command.strip()
-    if not t.startswith("echo"):
-        return False
-    if not t[4:].startswith((" ", "\t")) and len(t) > 4:
-        if not re.match(r"^echo[ \t]", t):
-            return False
-    rest = t[4:].strip()
-    while rest.startswith("-") and set(rest.lstrip("-")[:5]).issubset({"n", "e", "E"}):
-        rest = rest.lstrip("-").lstrip("neE").strip()
-    return bool(rest) and len(rest) < 512 and not re.search(r"[;&|><$\`\(\)\n]", rest)
-
-
-def _add_noop_reminder(output: str, command: str) -> str:
-    if _is_noop_command(command) or _is_bare_echo(command):
-        output += (
-            "\n\n<system-reminder>\n"
-            "You appear to be running empty/echo commands to stay active while waiting. "
-            "End your turn — you will be woken automatically when there is something to do.\n"
-            "</system-reminder>"
-        )
-    return output
-
-
-def run_bash(input: BashInput, workspace_dir: str) -> BashOutput:
-    workdir = input.workdir or workspace_dir
+def run_bash(input: BashInput, workspace_dir: Optional[str] = None) -> BashOutput:
+    workdir = resolve_workdir(input.workdir, workspace_dir)
     if not os.path.isdir(workdir):
         return BashOutput(success=False, error=f"Workdir not found: {workdir}")
 
@@ -153,11 +206,13 @@ def run_bash(input: BashInput, workspace_dir: str) -> BashOutput:
 def _run_foreground(cmd: str, workdir: str, timeout_ms: int) -> BashOutput:
     timeout_ms = min(timeout_ms, _MAX_TIMEOUT_MS)
     timeout_sec = timeout_ms / 1000.0
+    wrapped, cwd_file = _wrap_command(cmd)
 
     try:
         proc = subprocess.Popen(
-            cmd,
+            wrapped,
             shell=True,
+            executable=_shell_executable(),
             cwd=workdir,
             # Never inherit the server's stdin: a command that reads stdin
             # (e.g. sudo waiting for a password) would otherwise block forever
@@ -174,20 +229,18 @@ def _run_foreground(cmd: str, workdir: str, timeout_ms: int) -> BashOutput:
         if proc.returncode is None:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL) if os.name != "nt" else proc.kill()
             proc.wait()
-            output = _add_noop_reminder(output, cmd)
             return BashOutput(
                 success=False,
                 exit_code=-1,
-                output=output,
+                output=_output_with_status(output, -1, "timeout"),
                 error=f"Command timed out after {timeout_ms}ms",
                 signal="timeout",
             )
 
-        output = _add_noop_reminder(output, cmd)
         return BashOutput(
             success=proc.returncode == 0,
             exit_code=proc.returncode,
-            output=output,
+            output=_output_with_status(output, proc.returncode),
         )
 
     except subprocess.TimeoutExpired:
@@ -205,11 +258,10 @@ def _run_foreground(cmd: str, workdir: str, timeout_ms: int) -> BashOutput:
         except Exception:
             pass
         output = remaining.decode("utf-8", errors="replace")
-        output = _add_noop_reminder(output, cmd)
         return BashOutput(
             success=False,
             exit_code=-1,
-            output=output,
+            output=_output_with_status(output, -1, "timeout"),
             error=f"Command timed out after {timeout_ms}ms",
             signal="timeout",
         )
@@ -218,6 +270,8 @@ def _run_foreground(cmd: str, workdir: str, timeout_ms: int) -> BashOutput:
         return BashOutput(success=False, error=f"Command not found: {cmd.split()[0]}")
     except OSError as e:
         return BashOutput(success=False, error=str(e))
+    finally:
+        _consume_cwd(cwd_file)
 
 
 def _run_background(cmd: str, workdir: str, description: str) -> BashOutput:
@@ -227,6 +281,7 @@ def _run_background(cmd: str, workdir: str, description: str) -> BashOutput:
         proc = subprocess.Popen(
             cmd,
             shell=True,
+            executable=_shell_executable(),
             cwd=workdir,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -372,7 +427,7 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
 
 def run_bash_streamed(
     cmd: str,
-    workdir: str,
+    workdir: Optional[str] = None,
     timeout_ms: Optional[int] = None,
     cancel_event=None,
 ) -> Generator[Dict[str, Any], None, None]:
@@ -380,6 +435,9 @@ def run_bash_streamed(
 
     Final result is yielded as {'success': bool, 'output': str, ...}.
     Used by ToolBridge for real-time display of command output.
+
+    ``workdir`` defaults to the shared shell directory, so a ``cd`` issued in a
+    previous call keeps applying until another one changes it.
 
     ``cancel_event`` (threading.Event) aborts the running command as soon as it
     is set. Output is read on a reader thread so the timeout and the cancel
@@ -391,11 +449,19 @@ def run_bash_streamed(
     timeout_ms = min(timeout_ms, _MAX_TIMEOUT_MS)
     timeout_sec = timeout_ms / 1000.0
 
+    resolved_workdir = resolve_workdir(workdir)
+    if not os.path.isdir(resolved_workdir):
+        yield {"success": False, "error": f"Workdir not found: {resolved_workdir}"}
+        return
+
+    wrapped, cwd_file = _wrap_command(cmd)
+
     try:
         proc = subprocess.Popen(
-            cmd,
+            wrapped,
             shell=True,
-            cwd=workdir,
+            executable=_shell_executable(),
+            cwd=resolved_workdir,
             # A silent, stdin-reading command (sudo password prompt, interactive
             # tool) must not hang: /dev/null makes it fail fast with output.
             stdin=subprocess.DEVNULL,
@@ -405,9 +471,11 @@ def run_bash_streamed(
             preexec_fn=os.setsid if os.name != "nt" else None,
         )
     except FileNotFoundError:
+        _consume_cwd(cwd_file)
         yield {"success": False, "error": f"Command not found: {cmd.split()[0]}"}
         return
     except OSError as e:
+        _consume_cwd(cwd_file)
         yield {"success": False, "error": str(e)}
         return
 
@@ -464,11 +532,12 @@ def run_bash_streamed(
 
     if cancelled or timed_out:
         _terminate_process_group(proc)
-        output = _add_noop_reminder("\n".join(output_lines), cmd)
+        _consume_cwd(cwd_file)
+        output = "\n".join(output_lines)
         if cancelled:
             yield {
                 "success": False,
-                "output": output,
+                "output": _output_with_status(output, -1, "interrupted"),
                 "error": "Commande interrompue par l'utilisateur.",
                 "signal": "interrupted",
                 "exit_code": -1,
@@ -476,7 +545,7 @@ def run_bash_streamed(
         else:
             yield {
                 "success": False,
-                "output": output,
+                "output": _output_with_status(output, -1, "timeout"),
                 "error": f"Command timed out after {timeout_ms}ms",
                 "signal": "timeout",
                 "exit_code": -1,
@@ -488,9 +557,10 @@ def run_bash_streamed(
     except Exception:
         pass
     proc.wait()
-    output = _add_noop_reminder("\n".join(output_lines), cmd)
+    _consume_cwd(cwd_file)
+    output = "\n".join(output_lines)
     yield {
         "success": proc.returncode == 0,
         "exit_code": proc.returncode,
-        "output": output,
+        "output": _output_with_status(output, proc.returncode),
     }

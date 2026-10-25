@@ -22,7 +22,7 @@ class TodoItem:
     updated_at: str = ""
 
 
-DESCRIPTION_FULL = """Manage a structured todo list for the current workspace.
+DESCRIPTION_FULL = """Manage a structured todo list shared by every session.
 Actions:
 - list: show all todos
 - add: add one or more items (content string, or items list)
@@ -30,14 +30,34 @@ Actions:
 - clear: remove completed/cancelled items (or all if force=true)"""
 
 
-def _path(workspace_dir: str) -> str:
-    return os.path.join(workspace_dir, TODO_FILENAME)
+def _path(workspace_dir: Optional[str] = None) -> str:
+    """Todo list lives in the user config dir: it no longer depends on a cwd."""
+    from ..paths import USER_CONFIG_DIR, ensure_user_dirs
+
+    try:
+        ensure_user_dirs()
+        base = USER_CONFIG_DIR
+    except OSError:
+        base = None
+    if base is not None:
+        return os.path.join(str(base), TODO_FILENAME)
+    return os.path.join(workspace_dir or os.getcwd(), TODO_FILENAME)
 
 
-def _load(workspace_dir: str) -> List[Dict[str, Any]]:
+def _legacy_path(workspace_dir: Optional[str]) -> Optional[str]:
+    if not workspace_dir:
+        return None
+    legacy = os.path.join(str(workspace_dir), TODO_FILENAME)
+    return legacy if os.path.isfile(legacy) else None
+
+
+def _load(workspace_dir: Optional[str] = None) -> List[Dict[str, Any]]:
     p = _path(workspace_dir)
     if not os.path.isfile(p):
-        return []
+        legacy = _legacy_path(workspace_dir)
+        if not legacy:
+            return []
+        p = legacy
     try:
         with open(p, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -46,10 +66,18 @@ def _load(workspace_dir: str) -> List[Dict[str, Any]]:
         return []
 
 
-def _save(workspace_dir: str, items: List[Dict[str, Any]]) -> None:
+def _save(workspace_dir: Optional[str], items: List[Dict[str, Any]]) -> None:
     p = _path(workspace_dir)
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(items, f, indent=2, ensure_ascii=False)
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(items, f, indent=2, ensure_ascii=False)
+    except OSError:
+        legacy = _legacy_path(workspace_dir) or os.path.join(
+            workspace_dir or os.getcwd(), TODO_FILENAME
+        )
+        with open(legacy, "w", encoding="utf-8") as f:
+            json.dump(items, f, indent=2, ensure_ascii=False)
 
 
 def _now() -> str:
@@ -69,7 +97,7 @@ def _format(items: List[Dict[str, Any]]) -> str:
 
 def todo(
     action: str,
-    workspace_dir: str,
+    workspace_dir: Optional[str] = None,
     content: Optional[str] = None,
     items: Optional[List[str]] = None,
     id: Optional[str] = None,

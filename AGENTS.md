@@ -13,7 +13,7 @@ Trois surfaces partagent le **même moteur**, les **mêmes outils** et la **mêm
 - **Web** — `web/` (backend FastAPI + frontend React/Vite)
 - **Telegram** — `telegram_bot.py` (bot, mémoire partagée)
 
-Développé par **Ekoue TETE** (TEJF). Licence : voir `LICENSE`. Version : `2.1.0` (`pyproject.toml`).
+Développé par **Ekoue TETE** (TEJF). Licence : voir `LICENSE`. Version : `2.2.0` (`pyproject.toml`).
 
 ---
 
@@ -101,6 +101,7 @@ docs/SUBAGENTS.md            Configuration et coordination des sous-agents
 - `~/.config/nemesis-cli/github.yaml` — identifiants GitHub (jamais commité)
 - `~/.config/nemesis-cli/telegram_bot.yaml` — overlay config bot
 - `~/.config/nemesis-cli/mcp_config.yaml` — serveurs MCP
+- `~/.config/nemesis-cli/.nemesis_todos.json` — plan de travail partagé
 
 Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
 
@@ -122,6 +123,15 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
   `subagent_status` suit leurs rapports en mémoire. Ils partagent les outils NEMESIS, sans identité
   persistante ni délégation récursive. Le provider et sa clé sont configurés sous `subagents` dans
   `config.yaml` ; les routes Web ne renvoient jamais la clé.
+- **Pas de sandbox de fichiers** : `security.workspace` n'est qu'un répertoire de départ
+  (vide = répertoire courant). `src/core/paths.py` expose `session_cwd()`, `set_session_cwd()`
+  et `resolve_path()` ; les chemins relatifs suivent le `cd` persistant de l'outil `bash`.
+- **Aucune limite d'itérations** : `while True` dans `agent.py`, `web/backend/agent_runner.py`,
+  `telegram_bot.py` et `src/core/agent_manager.py`. Seules sorties : plus d'appel d'outil,
+  interruption utilisateur, doublon de réponse, erreur provider. Les sous-agents utilisent
+  `max_iterations: 0` (= illimité) et retombent sur le provider principal sans clé dédiée.
+- **Feedback d'outil uniforme** : `src/core/agent_tools.py::format_tool_feedback` expose
+  toujours stdout+stderr, le code de sortie et le signal.
 - **Pas de conversation fictive par défaut** : le mock n'est chargé qu'avec `?demo=1`.
   Backend injoignable → bandeau « Backend injoignable » + bouton Réessayer.
 - **Thème** : clair (blanc-bleu) par défaut, sombre (bleu nuit) ; persisté dans `localStorage("nemesis-theme")`.
@@ -152,7 +162,18 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
 
 ## Historique récent
 
-### Non publié — Interface Web, Mémoire, GitHub, Performance
+### Non publié — Autonomie totale, chemins libres, gros travaux shell
+- Suppression de toutes les limites d'itérations (CLI, Web, Telegram, A2A, sous-agents).
+- Plus de confinement à un workspace : chemins absolus partout, chemins relatifs ancrés sur un
+  `cd` persistant partagé entre appels `bash`.
+- `write_file`/`edit`/`delete_file` respectent strictement `path`/`file_path`/`filename`, créent
+  les dossiers parents et renvoient un chemin absolu ; dossier cible = erreur explicite.
+- `bash` : bash comme shell, heredocs/multi-lignes, timeout 10 s–7 jours (défaut 600 s), sortie
+  jamais vide (code de sortie explicite), stderr et signal toujours remontés.
+- Sous-agents : repli automatique sur le provider principal quand aucune clé dédiée n'existe.
+- Docs `Non publié` : voir `docs/CHANGELOG.md`.
+
+### Interface Web, Mémoire, GitHub, Performance
 - Interface Web complète (backend FastAPI + SPA React) : chat streaming, terminal PTY,
   explorateur de fichiers, 8 onglets de réglages, thème responsive.
 - Mémoire persistante (`src/core/memory_store.py`) partagée CLI/Web/Telegram + outils `memory_*`.

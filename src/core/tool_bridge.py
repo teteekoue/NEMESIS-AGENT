@@ -16,21 +16,23 @@ class ToolBridge:
 
     def __init__(
         self,
-        workspace: str = "./workspace",
+        workspace: str | None = None,
         cancel_event=None,
         config: Dict[str, Any] | None = None,
         enable_subagents: bool = True,
     ):
-        self.workspace_root = Path(workspace).resolve()
+        raw_workspace = str(workspace).strip() if workspace else ""
+        self.workspace_root = (
+            Path(raw_workspace).expanduser().resolve() if raw_workspace else Path.cwd()
+        )
         if not self.workspace_root.exists():
-            self.workspace_root.mkdir(parents=True, exist_ok=True)
+            self.workspace_root = Path.cwd()
         self.subagent_fleet = None
         if enable_subagents:
             from src.core.subagents import SubagentFleet
 
             self.subagent_fleet = SubagentFleet(config or {}, str(self.workspace_root))
         self.registry = create_registry(str(self.workspace_root), self.subagent_fleet)
-        self._read_paths = set()
         # Optional threading.Event used to abort a running bash command as soon
         # as the user interrupts the turn (Stop button).
         self.cancel_event = cancel_event
@@ -64,31 +66,16 @@ class ToolBridge:
         return risk
 
     def _resolve_tool_path(self, raw) -> str:
-        from src.core.paths import resolve_existing_path
+        from src.core.paths import resolve_path
 
-        return resolve_existing_path(raw, fallback_base=self.workspace_root)
-
-    def _check_read_before_write(self, tool_name: str, parameters: Dict[str, Any]) -> str | None:
-        if tool_name not in {"edit", "delete_file"}:
-            return None
-        raw = parameters.get("file_path") or parameters.get("target_file") or parameters.get("path")
-        if not raw:
-            return None
-        path = self._resolve_tool_path(raw)
-        if os.path.exists(path) and path not in self._read_paths:
-            return f"Read the existing file with read_file before using {tool_name}: {raw}"
-        return None
+        return resolve_path(raw)
 
     def execute_tool(self, tool_name: str, parameters: Dict[str, Any]):
         yield from self._execute(tool_name, parameters)
 
     def _execute(self, tool_name: str, parameters: Dict[str, Any]):
         try:
-            parameters = parameters or {}
-            read_error = self._check_read_before_write(tool_name, parameters)
-            if read_error:
-                yield {"success": False, "stdout": read_error, "error": read_error}
-                return
+            parameters = dict(parameters or {})
             reg = self.registry.get_tool(tool_name)
             if reg is None:
                 yield {"success": False, "stdout": f"Outil inconnu: {tool_name}"}
@@ -96,152 +83,75 @@ class ToolBridge:
 
             # Compatibilite legacy : mode asynchrone -> is_background
             if tool_name == "bash" and "mode" in parameters and "is_background" not in parameters:
-                parameters = dict(parameters)
-                parameters["is_background"] = str(parameters.pop("mode", "")).lower() in ("asynchrone", "async", "background", "true")
+                parameters["is_background"] = str(parameters.pop("mode", "")).lower() in (
+                    "asynchrone", "async", "background", "true"
+                )
 
             ok, cleaned, error = self.registry.validate_call(tool_name, parameters)
             if not ok:
-                yield {"success": False, "stdout": error}
+                yield {"success": False, "stdout": error, "error": error}
                 return
             parameters = cleaned
 
             if tool_name == "bash":
-                cmd = parameters.get("command", "")
-                is_bg = parameters.get("is_background", False)
-                timeout = parameters.get("timeout")
-                workdir = parameters.get("workdir", self.workspace_root)
+                from src.core.agent_tools import _make_bash_input
 
-                if is_bg:
-                    # Background: use normal handler (returns immediately)
+                seconds = parameters.get("timeout")
+                milliseconds = parameters.get("timeout_ms")
+                bash_input = _make_bash_input(
+                    parameters.get("command", ""),
+                    parameters.get("description", ""),
+                    seconds if seconds is not None else milliseconds,
+                    bool(parameters.get("is_background", parameters.get("background", False))),
+                    parameters.get("workdir") or parameters.get("cwd"),
+                    timeout_is_ms=seconds is None and milliseconds is not None,
+                )
+
+                if bash_input.is_background:
                     result = reg.handler(
-                        command=cmd,
-                        description=parameters.get("description", ""),
-                        timeout=timeout,
+                        command=bash_input.command,
+                        description=bash_input.description,
+                        timeout=parameters.get("timeout"),
+                        timeout_ms=parameters.get("timeout_ms"),
                         is_background=True,
-                        workdir=workdir,
+                        workdir=bash_input.workdir,
                     )
-                else:
-                    # Foreground: execute and collect all output (no streaming)
-                    wd = str(workdir) if not isinstance(workdir, str) else workdir
-                    from src.core.tools.bash import timeout_seconds_to_ms
-                    full_output = []
-                    for update in run_bash_streamed(cmd, wd, timeout_seconds_to_ms(timeout), cancel_event=self.cancel_event):
-                        if "partial" in update:
-                            # Accumulate output but don't yield it
-                            full_output.append(update["partial"])
-                        else:
-                            result = update
-                    # Combine accumulated output with final result
-                    if isinstance(result, dict):
-                        # The result already contains the full output from bash.py, but we've also accumulated partial outputs
-                        # Use only the accumulated output to avoid duplication
-                        existing_stdout = result.get("stdout", "")
-                        if full_output:
-                            result["stdout"] = "\n".join(full_output)
-                        else:
-                            result["stdout"] = existing_stdout
-                        result.pop("output", None)  # Clean up duplicate key
-                        yield result
-                    return
-            elif tool_name == "get_task_output":
-                result = reg.handler(
-                    task_id=parameters.get("task_id", ""),
-                    timeout_ms=parameters.get("timeout_ms"),
-                )
-            elif tool_name == "kill_task":
-                result = reg.handler(task_id=parameters.get("task_id", ""))
-            elif tool_name == "list_dir":
-                result = reg.handler(
-                    path=parameters.get("path"),
-                    depth=parameters.get("depth", 2),
-                )
-            elif tool_name == "web_search":
-                result = reg.handler(
-                    query=parameters.get("query", ""),
-                    max_results=parameters.get("max_results", 5),
-                )
-            elif tool_name == "web_fetch":
-                result = reg.handler(
-                    url=parameters.get("url", ""),
-                    format=parameters.get("format", "markdown"),
-                )
-            elif tool_name == "read_file":
-                result = reg.handler(
-                    path=parameters.get("path"),
-                    paths=parameters.get("paths"),
-                    offset=parameters.get("offset"),
-                    limit=parameters.get("limit"),
-                )
-            elif tool_name == "edit":
-                result = reg.handler(
-                    file_path=parameters.get("file_path", ""),
-                    old_string=parameters.get("old_string", ""),
-                    new_string=parameters.get("new_string", ""),
-                    replace_all=parameters.get("replace_all", False),
-                )
-            elif tool_name == "write_file":
-                result = reg.handler(
-                    file_path=parameters.get("file_path", ""),
-                    content=parameters.get("content", ""),
-                )
-            elif tool_name == "delete_file":
-                result = reg.handler(target_file=parameters.get("target_file", ""))
-            elif tool_name == "grep":
-                result = reg.handler(
-                    pattern=parameters.get("pattern", ""),
-                    include=parameters.get("include"),
-                    path=parameters.get("path"),
-                    case_insensitive=parameters.get("case_insensitive", False),
-                )
-            elif tool_name == "mcp_list":
-                result = reg.handler()
-            elif tool_name == "mcp_tools_list":
-                result = reg.handler(server=parameters.get("server", ""))
-            elif tool_name == "mcp_call":
-                result = reg.handler(
-                    server=parameters.get("server", ""),
-                    tool=parameters.get("tool", ""),
-                    arguments=parameters.get("arguments"),
-                )
-            elif tool_name == "glob":
-                result = reg.handler(
-                    pattern=parameters.get("pattern", ""),
-                    path=parameters.get("path"),
-                    max_results=parameters.get("max_results", 200),
-                )
-            elif tool_name == "git":
-                result = reg.handler(
-                    action=parameters.get("action", "status"),
-                    path=parameters.get("path"),
-                    limit=parameters.get("limit", 20),
-                )
-            elif tool_name == "todo":
-                result = reg.handler(
-                    action=parameters.get("action", "list"),
-                    content=parameters.get("content"),
-                    items=parameters.get("items"),
-                    id=parameters.get("id"),
-                    status=parameters.get("status"),
-                    force=parameters.get("force", False),
-                )
-            elif tool_name == "apply_patch":
-                result = reg.handler(
-                    patch=parameters.get("patch", ""),
-                    dry_run=parameters.get("dry_run", False),
-                )
-            else:
-                # Generic dispatch for any remaining registered tool
-                try:
-                    result = reg.handler(**parameters)
-                except TypeError:
-                    yield {"success": False, "stdout": f"Outil non implemente ou parametres invalides: {tool_name}"}
+                    if not isinstance(result, dict):
+                        result = {"success": getattr(result, "success", False),
+                                  "stdout": getattr(result, "output", ""),
+                                  "error": getattr(result, "error", None)}
+                    result.setdefault("stdout", result.get("output", ""))
+                    yield result
                     return
 
-            if tool_name == "read_file" and getattr(result, "success", False):
-                read_values = parameters.get("paths") or [parameters.get("path")]
-                for raw in read_values:
-                    if raw:
-                        self._read_paths.add(self._resolve_tool_path(raw))
+                cmd = bash_input.command
+                workdir = bash_input.workdir
+
+                final: Dict[str, Any] | None = None
+                accumulated: list[str] = []
+                for update in run_bash_streamed(
+                    cmd, workdir, bash_input.timeout_ms, cancel_event=self.cancel_event
+                ):
+                    if "partial" in update:
+                        accumulated.append(update["partial"])
+                    else:
+                        final = update
+                if final is None:
+                    final = {
+                        "success": False,
+                        "output": "",
+                        "error": "La commande n'a produit aucun resultat exploitable.",
+                        "exit_code": -1,
+                    }
+                final = dict(final)
+                # Keep both keys: chat surfaces read `output`, the model sees
+                # `stdout`; neither may silently drop stderr or the exit code.
+                final.setdefault("stdout", final.get("output", ""))
+                final.setdefault("output", final.get("stdout", ""))
+                yield final
+                return
+
+            result = reg.handler(**parameters)
 
             if isinstance(result, dict):
                 yield result
@@ -249,39 +159,44 @@ class ToolBridge:
 
             if hasattr(result, "__iter__") and not isinstance(result, str):
                 for item in result:
-                    if tool_name == "read_file" and getattr(item, "get", lambda *_: False)("success"):
-                        for raw in parameters.get("paths") or [parameters.get("path")]:
-                            if raw:
-                                self._read_paths.add(self._resolve_tool_path(raw))
                     yield item
                 return
 
             formatted = build_feedback(tool_name, result)
             success = getattr(result, "success", getattr(result, "exit_code", 1) == 0)
             err = getattr(result, "error", getattr(result, "stderr", None))
-            
-            # Pour edit, inclure les edits dans le résultat
+
             output = {"success": success, "stdout": formatted, "error": err}
             if tool_name == "edit" and hasattr(result, "edits"):
                 output["edits"] = result.edits
             if tool_name == "edit" and hasattr(result, "message"):
                 output["message"] = result.message
-            
+            if hasattr(result, "path"):
+                output["path"] = result.path
+
             yield output
 
         except Exception as e:
-            yield {"success": False, "stdout": f"Erreur outil '{tool_name}': {str(e)}"}
+            yield {"success": False, "stdout": f"Erreur outil '{tool_name}': {str(e)}", "error": str(e)}
 
     def get_system_prompt(self) -> str:
         # The live registry is the single source of truth for capabilities.
         # A static prompt can drift from the installed handlers and schemas.
         prompt = build_system_prompt(self.registry)
-        if self.subagent_fleet is not None and not self.subagent_fleet._has_api_key():
-            prompt += (
-                "\n\nConfiguration sous-agents incomplète : aucune clé API disponible. "
-                "Prévenir l'utilisateur au démarrage et indiquer Réglages → Sous-agents "
-                "ou GROQ_API_KEY/OPENAI_API_KEY avant de proposer une délégation."
-            )
+        if self.subagent_fleet is not None:
+            availability = self.subagent_fleet.availability()
+            if availability["available"]:
+                if availability["mode"] == "main-provider":
+                    prompt += (
+                        "\n\nDélégation disponible : aucune clé dédiée n'est configurée, "
+                        "le provider principal est réutilisé par les sous-agents."
+                    )
+            else:
+                prompt += (
+                    "\n\nDélégation indisponible : aucune clé API de sous-agent et provider "
+                    "principal inutilisable. Signaler ce mode dégradé si une délégation est "
+                    "demandée, sans bloquer le reste du travail."
+                )
         return prompt
 
     def get_openai_tools(self) -> list:
@@ -338,5 +253,5 @@ class ToolBridge:
         return mapping.get(tool_name, (tool_name, lambda p: p))
 
 
-def create_tool_bridge(workspace: str = "./workspace", config=None) -> ToolBridge:
+def create_tool_bridge(workspace: str | None = None, config=None) -> ToolBridge:
     return ToolBridge(workspace, config=config)

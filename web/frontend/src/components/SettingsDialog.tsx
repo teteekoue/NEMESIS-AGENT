@@ -66,12 +66,12 @@ function Field({
   );
 }
 
-const QUICK_WORKSPACES = ["~/nemesis-workspace", "~/", "/tmp", "."];
+const QUICK_WORKSPACES = ["~/", "/tmp", ".", "/"];
 const DEFAULT_SUBAGENTS: SubagentsConfig = {
   profiles: [],
   profile_count: 0,
   max_concurrent: 4,
-  max_iterations: 12,
+  max_iterations: 0,
   timeout_seconds: 180,
   max_retries: 3,
   max_tokens_per_task: 24000,
@@ -770,7 +770,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           </TabsContent>
 
           <TabsContent value="general" className="space-y-4">
-            <Field label="Workspace" hint="Dossier de travail de l'agent (fichiers et commandes).">
+            <Field label="Répertoire de départ" hint="Point de départ des chemins relatifs. Laissez vide pour utiliser le répertoire courant : l'agent peut agir partout sur le système.">
               <div className="flex gap-2">
                 <Input value={workspace} onChange={(e) => setWorkspace(e.target.value)} />
                 <Select value="" onValueChange={(value) => value && setWorkspace(value)}>
@@ -961,15 +961,15 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             <section className="space-y-3 rounded-xl border border-border p-4">
               <div>
                 <h3 className="text-sm font-semibold">Capacité et quotas locaux</h3>
-                <p className="text-xs text-muted-foreground">Les profils sont essayés à tour de rôle ; une clé en 429 est refroidie puis reprise avec backoff.</p>
+                <p className="text-xs text-muted-foreground">Les profils sont essayés à tour de rôle ; une clé en 429 est refroidie puis reprise avec backoff. Sans clé dédiée, le provider principal est réutilisé automatiquement.</p>
               </div>
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
                 <Field label="Workers simultanés (1–8)">
                   <Input type="number" min={1} max={8} value={subagents.max_concurrent}
                     onChange={(event) => setSubagents((current) => ({ ...current, max_concurrent: Number(event.target.value) }))} />
                 </Field>
-                <Field label="Itérations / tâche (1–30)">
-                  <Input type="number" min={1} max={30} value={subagents.max_iterations}
+                <Field label="Itérations / tâche (0 = illimité)" hint="0 retire toute limite d'itérations.">
+                  <Input type="number" min={0} max={100000} value={subagents.max_iterations}
                     onChange={(event) => setSubagents((current) => ({ ...current, max_iterations: Number(event.target.value) }))} />
                 </Field>
                 <Field label="Timeout requête (10–600 s)">

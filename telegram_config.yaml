@@ -5,8 +5,9 @@
 # Set TELEGRAM_BOT_TOKEN in the environment. Never commit a real token.
 token: ""
 
-# Répertoire de travail pour l'agent
-workspace: "./workspace"
+# Répertoire de départ pour l'agent (vide = répertoire courant).
+# L'agent n'est pas confiné : il peut agir partout sur le système.
+workspace: ""
 
 # Configuration optionnelle
 # timeout: 30  # Timeout en secondes pour les requêtes

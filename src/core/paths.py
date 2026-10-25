@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -20,9 +21,14 @@ USER_CONFIG_DIR = Path(
     os.environ.get("NEMESIS_CONFIG_DIR", Path.home() / ".config" / "nemesis-cli")
 ).expanduser()
 
+# Kept for backward compatibility only. NEMESIS is no longer confined to a
+# workspace: the default base directory is the shell's current directory.
 DEFAULT_WORKSPACE = Path(
-    os.environ.get("NEMESIS_WORKSPACE", Path.home() / "nemesis-workspace")
+    os.environ.get("NEMESIS_WORKSPACE") or Path.cwd()
 ).expanduser()
+
+_SESSION_CWD: Optional[Path] = None
+_SESSION_CWD_LOCK = threading.Lock()
 
 # Filenames
 CONFIG_NAME = "config.yaml"
@@ -153,16 +159,53 @@ def tools_library_path() -> Path:
 
 
 def system_base_dir() -> Path:
-    """Base directory used to resolve relative paths across the whole system.
+    """Current base directory used to resolve every relative path.
 
-    Relative paths are interpreted from the process working directory so the
-    agent can reach any file on the machine instead of being confined to the
-    configured workspace.
+    NEMESIS has no sandbox and no fixed workspace: the agent works anywhere on
+    the machine. Relative paths resolve against the live shell directory, which
+    follows ``cd`` from one bash call to the next.
     """
+    return session_cwd()
+
+
+def session_cwd() -> Path:
+    """Return the shared shell directory for this process (never sandboxed)."""
+    global _SESSION_CWD
+    with _SESSION_CWD_LOCK:
+        if _SESSION_CWD is None:
+            try:
+                _SESSION_CWD = Path(os.getcwd())
+            except OSError:
+                _SESSION_CWD = Path.home()
+        return _SESSION_CWD
+
+
+def set_session_cwd(path) -> Path:
+    """Update the shared shell directory after a command changed directory."""
+    global _SESSION_CWD
+    raw = str(path if path is not None else "").strip()
+    candidate = Path(os.path.expandvars(os.path.expanduser(raw))) if raw else Path.home()
+    if not candidate.is_absolute():
+        candidate = session_cwd() / candidate
     try:
-        return Path(os.getcwd())
+        candidate = Path(os.path.realpath(str(candidate)))
     except OSError:
-        return Path.home()
+        candidate = Path(os.path.normpath(str(candidate)))
+    with _SESSION_CWD_LOCK:
+        _SESSION_CWD = candidate
+    return candidate
+
+
+def reset_session_cwd() -> Path:
+    """Reset the shared shell directory to the process working directory."""
+    global _SESSION_CWD
+    try:
+        cwd = Path(os.getcwd())
+    except OSError:
+        cwd = Path.home()
+    with _SESSION_CWD_LOCK:
+        _SESSION_CWD = cwd
+    return cwd
 
 
 def resolve_path(path_str, base=None) -> str:
@@ -170,13 +213,13 @@ def resolve_path(path_str, base=None) -> str:
 
     - ``~`` and ``$VARIABLES`` are expanded.
     - Absolute paths are returned (realpath applied when possible).
-    - Relative paths resolve against ``base`` (default: current working
+    - Relative paths resolve against ``base`` (default: the live shell
       directory) and are never confined to a project workspace.
     """
     raw = os.path.expandvars(str(path_str if path_str is not None else "")).strip()
     if raw.startswith("~"):
         raw = os.path.expanduser(raw)
-    p = Path(raw)
+    p = Path(raw) if raw else Path(".")
     if not p.is_absolute():
         base_dir = Path(base) if base is not None else system_base_dir()
         if base_dir.is_file():
@@ -189,37 +232,34 @@ def resolve_path(path_str, base=None) -> str:
 
 
 def resolve_existing_path(path_str, base=None, fallback_base=None) -> str:
-    """Resolve a path, preferring an existing location anywhere on the system.
+    """Resolve a path anywhere on the system.
 
-    The system-resolved location is tried first. If it does not exist and a
-    ``fallback_base`` is provided (typically the configured workspace), the
-    path is also tried relative to that base so legacy workspace-relative
-    paths keep working.
+    ``fallback_base`` is accepted for backward compatibility only: NEMESIS no
+    longer redirects unknown paths into a workspace directory.
     """
-    resolved = resolve_path(path_str, base)
-    if os.path.exists(resolved):
-        return resolved
-    if fallback_base is not None:
-        alt = resolve_path(path_str, fallback_base)
-        if os.path.exists(alt):
-            return alt
-    return resolved
+    return resolve_path(path_str, base)
 
 
 def resolve_workspace(config: Optional[dict] = None) -> Path:
-    """Resolve workspace directory from config or defaults; ensure it exists."""
+    """Return the starting directory of the agent.
+
+    An explicit ``security.workspace`` is still honoured as a *starting point*
+    for relative paths, but nothing is confined to it. Without configuration
+    the live shell directory is used and no directory is created.
+    """
     ws = None
     if isinstance(config, dict):
         sec = config.get("security") or {}
         if isinstance(sec, dict) and sec.get("workspace"):
-            ws = Path(str(sec["workspace"])).expanduser()
-    if ws is None:
-        ws = DEFAULT_WORKSPACE
-    if not ws.is_absolute():
-        # Relative paths are relative to HOME, not install dir
-        ws = (Path.home() / ws).resolve()
-    try:
-        ws.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
-    return ws
+            ws = str(sec["workspace"]).strip()
+    if not ws:
+        return session_cwd()
+    expanded = Path(os.path.expandvars(os.path.expanduser(ws)))
+    if not expanded.is_absolute():
+        expanded = session_cwd() / expanded
+    candidate = Path(os.path.normpath(str(expanded)))
+    if not candidate.is_dir():
+        # A stale "workspace" from an older install must never block the agent:
+        # fall back to the live shell directory.
+        return session_cwd()
+    return candidate

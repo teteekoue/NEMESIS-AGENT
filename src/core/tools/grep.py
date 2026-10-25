@@ -4,7 +4,7 @@ import shutil
 from dataclasses import dataclass
 from typing import Optional, List
 
-from ..paths import resolve_existing_path
+from ..paths import resolve_existing_path, system_base_dir
 
 
 @dataclass
@@ -43,17 +43,17 @@ DESCRIPTION_FULL = """Search file contents using ripgrep.
 _MAX_OUTPUT_BYTES = 10 * 1024 * 1024  # 10 Mo - augmente de 64 Ko
 
 
-def grep(input: GrepInput, workspace_dir: str) -> GrepResult:
+def grep(input: GrepInput, workspace_dir: Optional[str] = None) -> GrepResult:
     if shutil.which("rg"):
         return _grep_rg(input, workspace_dir)
     return _grep_fallback(input, workspace_dir)
 
 
-def _grep_rg(input: GrepInput, workspace_dir: str) -> GrepResult:
+def _grep_rg(input: GrepInput, workspace_dir: Optional[str] = None) -> GrepResult:
     search_path = (
-        resolve_existing_path(input.path, fallback_base=workspace_dir)
+        resolve_existing_path(input.path)
         if input.path
-        else os.path.abspath(workspace_dir)
+        else str(workspace_dir or system_base_dir())
     )
 
     args = ["rg", "--no-heading", "--with-filename", "--line-number", "--color=never"]
@@ -92,7 +92,6 @@ def _grep_rg(input: GrepInput, workspace_dir: str) -> GrepResult:
             capture_output=True,
             text=True,
             timeout=30,
-            cwd=workspace_dir,
         )
 
         if result.returncode == 1:
@@ -120,13 +119,13 @@ def _grep_rg(input: GrepInput, workspace_dir: str) -> GrepResult:
         return GrepResult(success=False, error="ripgrep (rg) not found. Install with: apt install ripgrep")
 
 
-def _grep_fallback(input: GrepInput, workspace_dir: str) -> GrepResult:
+def _grep_fallback(input: GrepInput, workspace_dir: Optional[str] = None) -> GrepResult:
     import re as regex
 
     search_path = (
-        resolve_existing_path(input.path, fallback_base=workspace_dir)
+        resolve_existing_path(input.path)
         if input.path
-        else os.path.abspath(workspace_dir)
+        else str(workspace_dir or system_base_dir())
     )
 
     try:

@@ -119,7 +119,12 @@ Le routage SPA est géré : toute route inconnue (hors `/api` et `/ws`) renvoie 
   - `Confirmation` : les outils à risque demandent votre accord (`y` / `n` / `a`).
   - `Toutes autorisations` : exécution sans confirmation (agent autonome).
 - **Terminal PTY réel** intégré (xterm.js).
-- **Explorateur de fichiers** du workspace (lecture seule dans l'UI, écriture via l'agent).
+- **Explorateur de fichiers** de tout le système (lecture seule dans l'UI, écriture via l'agent) :
+  un chemin absolu peut être ouvert directement, sinon les chemins partent du répertoire courant.
+  Le backend ne renvoie plus `403` pour un chemin hors d'un dossier de travail.
+- Le répertoire courant de l'outil `bash` est partagé par toutes les conversations du même
+  processus backend (un `cd` s'applique aux tours suivants), et la boucle d'outils n'a pas de
+  plafond d'itérations.
 - **Sessions** persistantes, reprises après rechargement, renommage automatique.
 - **Réglages complets** dans une navigation latérale avec panneau dédié par rubrique.
 - **Sous-agents éphémères** : profils API multiples, clés masquées, équilibrage par profil, reprise des 429 et budget par tâche.
@@ -225,7 +230,7 @@ renvoient que les noms de variables, jamais leurs valeurs.
 
 | Méthode | Route | Description |
 | ------- | ----- | ----------- |
-| GET    | `/api/files?path=` | Liste un dossier du workspace |
+| GET    | `/api/files?path=` | Liste un dossier (chemin relatif au répertoire courant ou absolu) |
 | GET    | `/api/files/content?path=` | Lit un fichier (tronqué si volumineux) |
 | GET    | `/api/sessions` | Liste des sessions |
 | POST   | `/api/sessions` | Crée une session |
@@ -289,7 +294,7 @@ Messages serveur → client : `{ "type": "output", "data": "..." }`, `{ "type": 
 La boîte de dialogue **Réglages** utilise une barre de navigation latérale et comporte 9 rubriques :
 
 1. **Connexion** — serveur NEMAPI local (hôte/port) ou URL publique, sélection du modèle, test de connexion.
-2. **Général** — workspace, auto-approbation des lectures, confirmation des actions à risque, affichage des sorties.
+2. **Général** — répertoire de départ (facultatif, vide = répertoire courant), auto-approbation des lectures, confirmation des actions à risque, affichage des sorties.
 3. **Sous-agents** — profils API avec secrets masqués, suppression individuelle, concurrence, retries 429 et budget tokens.
 4. **Mémoire** — activation, ajout/édition/suppression de blocs (voir [MEMORY.md](MEMORY.md)).
 5. **MCP** — ajout/suppression de serveurs MCP (commande + args + env).

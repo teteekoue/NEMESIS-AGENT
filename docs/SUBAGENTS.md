@@ -9,7 +9,7 @@ NEMESIS peut déléguer plusieurs tâches indépendantes à des instances tempor
 3. Chaque appel au modèle envoie l'historique complet OpenAI-compatible de la tâche, les définitions d'outils et les retours d'outils précédents. Les outils sont exécutés localement par NEMESIS, pas par Groq.
 4. NEMESIS appelle `subagent_status(task_id)` pour obtenir le rapport, puis vérifie les changements importants avant de les annoncer.
 
-Les sous-agents ont le registre d'outils NEMESIS, les mêmes chemins de travail et accès MCP/mémoire. Ils ne peuvent pas créer d'autres sous-agents. En mode Web « Confirmation », leurs actions à risque passent par la même autorisation utilisateur que les actions de l'agent principal. Plusieurs workers agissent sur le même workspace : leurs tâches doivent éviter les fichiers partagés ou définir explicitement comment fusionner les changements.
+Les sous-agents ont le registre d'outils NEMESIS, le même accès complet au système de fichiers (aucun sandbox) et l'accès MCP/mémoire. Sans clé dédiée configurée, le provider principal est réutilisé automatiquement ; `max_iterations: 0` (défaut) signifie aucune limite d'itérations. Ils ne peuvent pas créer d'autres sous-agents. En mode Web « Confirmation », leurs actions à risque passent par la même autorisation utilisateur que les actions de l'agent principal. Plusieurs workers agissent sur le même workspace : leurs tâches doivent éviter les fichiers partagés ou définir explicitement comment fusionner les changements.
 
 ## Fournisseur et configuration
 

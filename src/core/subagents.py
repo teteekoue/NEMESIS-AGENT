@@ -19,15 +19,14 @@ DEFAULT_SUBAGENT_CONFIG: Dict[str, Any] = {
     "base_url": "https://api.groq.com/openai/v1",
     "model": "qwen/qwen3.8-27b",
     "max_concurrent": 4,
-    "max_iterations": 12,
+    "max_iterations": 0,  # 0 = unlimited
     "timeout_seconds": 180,
     "max_retries": 3,
     "max_tokens_per_task": 24000,
 }
 
 MAX_SUBAGENTS = 8
-MAX_TOOL_CALLS_PER_RESPONSE = 3
-MAX_RESULT_CHARS = 12000
+MAX_RESULT_CHARS = 400_000
 MAX_RETAINED_TASKS = 100
 
 
@@ -40,6 +39,15 @@ class SubagentFleet:
         if isinstance(configured, dict):
             self.config.update(configured)
         self.profiles = self._load_profiles(configured)
+        self._fallback_profile = None
+        if not any(profile.get("api_key") for profile in self.profiles):
+            self._fallback_profile = self._build_fallback_profile(config)
+            if self._fallback_profile:
+                self.profiles.append(self._fallback_profile)
+                self.config.update({
+                    key: self._fallback_profile[key]
+                    for key in ("provider", "base_url", "model", "api_key")
+                })
         self._profile_lock = threading.RLock()
         self._profile_cursor = 0
         self._profile_cooldowns: Dict[str, float] = {}
@@ -103,8 +111,61 @@ class SubagentFleet:
             })
         return resolved
 
+    def _build_fallback_profile(self, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Reuse the main provider so delegation works without a dedicated key."""
+        provider = config.get("provider") if isinstance(config.get("provider"), dict) else {}
+        nemapi = config.get("nemapi") if isinstance(config.get("nemapi"), dict) else {}
+        provider_type = str(provider.get("type") or "nemapi").lower()
+        model = str(provider.get("model") or nemapi.get("model") or "").strip()
+        base_url = ""
+        api_key = ""
+        if provider_type == "nemapi":
+            url = str(nemapi.get("url") or "").strip()
+            if url:
+                base_url = url.rstrip("/")
+            else:
+                host = str(nemapi.get("host") or "127.0.0.1").strip()
+                port = nemapi.get("port") or 8090
+                base_url = f"http://{host}:{port}/v1"
+            api_key = str(nemapi.get("token") or provider.get("api_key") or "nemapi").strip()
+        else:
+            base_url = str(provider.get("base_url") or "").strip().rstrip("/")
+            api_key = str(provider.get("api_key") or "").strip()
+        if not base_url or not model or not api_key:
+            return None
+        return {
+            "id": "main-provider",
+            "name": f"Provider principal ({provider_type} · {model})",
+            "provider": provider_type,
+            "base_url": base_url,
+            "model": model,
+            "api_key": api_key,
+            "from_main_config": True,
+        }
+
     def _has_api_key(self) -> bool:
         return any(profile.get("api_key") for profile in self.profiles)
+
+    def availability(self) -> Dict[str, Any]:
+        """Describe delegation capabilities for prompts and diagnostics."""
+        if self._has_api_key():
+            return {
+                "available": True,
+                "mode": "dedicated" if not self._fallback_profile else "main-provider",
+                "detail": (
+                    "Profils de sous-agents dédiés."
+                    if not self._fallback_profile
+                    else "Aucune clé dédiée : le provider principal est réutilisé."
+                ),
+            }
+        return {
+            "available": False,
+            "mode": "unavailable",
+            "detail": (
+                "Aucune clé API de sous-agent et provider principal inutilisable. "
+                "Renseignez une clé dans Réglages → Sous-agents."
+            ),
+        }
 
     def _select_profile(self) -> Dict[str, Any]:
         if not self.profiles:
@@ -486,7 +547,14 @@ class SubagentFleet:
                     )
                 ) is not None and registration.definition.kind.is_read_only()
             ]
-        for _ in range(max(1, int(self.config["max_iterations"]))):
+        limit = max(0, int(self.config.get("max_iterations") or 0))
+        iteration = 0
+        while True:
+            iteration += 1
+            if limit and iteration > limit:
+                raise RuntimeError(
+                    f"Limite de {limit} itérations atteinte sans réponse finale."
+                )
             response, _profile = self._post_completion(
                 {
                     "messages": messages,
@@ -513,52 +581,45 @@ class SubagentFleet:
                 "content": message.get("content"),
                 "tool_calls": calls,
             })
-            for call_index, call in enumerate(calls):
+            for call in calls:
                 call_id = str(call.get("id") or uuid.uuid4().hex)
                 function = call.get("function") or {}
                 name = str(function.get("name") or "")
-                if call_index >= MAX_TOOL_CALLS_PER_RESPONSE:
+                raw_arguments = function.get("arguments") or "{}"
+                try:
+                    parameters = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+                except (TypeError, json.JSONDecodeError):
+                    parameters = {}
+                if not isinstance(parameters, dict):
+                    parameters = {}
+                if executor.registry.get_tool(name) is None:
+                    result = {"success": False, "stdout": f"Outil inconnu: {name}"}
+                elif (
+                    task.get("mode") == "read_only"
+                    and not executor.registry.get_tool(name).definition.kind.is_read_only()
+                ):
                     result = {
                         "success": False,
-                        "stdout": f"Limite de {MAX_TOOL_CALLS_PER_RESPONSE} appels d'outil par réponse atteinte.",
+                        "stdout": "Action bloquée : cette tâche est explicitement en mode read_only.",
                     }
-                else:
-                    raw_arguments = function.get("arguments") or "{}"
-                    try:
-                        parameters = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
-                    except (TypeError, json.JSONDecodeError):
-                        parameters = {}
-                    if not isinstance(parameters, dict):
-                        parameters = {}
-                    if executor.registry.get_tool(name) is None:
-                        result = {"success": False, "stdout": f"Outil inconnu: {name}"}
-                    elif (
-                        task.get("mode") == "read_only"
-                        and not executor.registry.get_tool(name).definition.kind.is_read_only()
-                    ):
-                        result = {
-                            "success": False,
-                            "stdout": "Action bloquée : cette tâche est explicitement en mode read_only.",
-                        }
-                    elif self._authorizer is not None:
-                        risk = executor.risk_for(name, parameters)
-                        if not self._authorizer(f"subagent:{task_id}/{name}", parameters, risk):
-                            result = {"success": False, "stdout": "Action refusée par l'utilisateur."}
-                        else:
-                            result = self._run_tool(executor, name, parameters)
+                elif self._authorizer is not None:
+                    risk = executor.risk_for(name, parameters)
+                    if not self._authorizer(f"subagent:{task_id}/{name}", parameters, risk):
+                        result = {"success": False, "stdout": "Action refusée par l'utilisateur."}
                     else:
                         result = self._run_tool(executor, name, parameters)
+                else:
+                    result = self._run_tool(executor, name, parameters)
                 self._record_progress(task_id, name, result)
+                payload = json.dumps(result, ensure_ascii=False, default=str)
+                if len(payload) > MAX_RESULT_CHARS:
+                    payload = payload[:MAX_RESULT_CHARS] + "\n...[truncated]"
                 messages.append({
                     "role": "tool",
                     "tool_call_id": call_id,
                     "name": name,
-                    "content": json.dumps(result, ensure_ascii=False, default=str)[:MAX_RESULT_CHARS],
+                    "content": payload,
                 })
-        raise RuntimeError(
-            f"Limite de {self.config['max_iterations']} itérations atteinte sans réponse finale."
-        )
-
     @staticmethod
     def _run_tool(executor: Any, name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         result: Dict[str, Any] = {"success": False, "stdout": "Aucun résultat outil."}

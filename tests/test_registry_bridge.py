@@ -72,7 +72,7 @@ class TestToolBridge:
         f = tmp_path / "data.txt"
         f.write_text("content")
         tb = ToolBridge(workspace=str(tmp_path))
-        results = list(tb.execute_tool("read_file", {"path": "data.txt", "limit": 1}))
+        results = list(tb.execute_tool("read_file", {"path": str(f), "limit": 1}))
         non_partial = [r for r in results if "partial" not in r]
         assert len(non_partial) == 1
         assert non_partial[0]["success"] is True

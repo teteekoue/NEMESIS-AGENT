@@ -162,7 +162,6 @@ class A2AAgentClient:
         self._error: Optional[str] = None
         self._executor = executor
         self._tools_cache = None
-        self._max_iterations = 50
         self._interrupted = False
 
         self._init_client()
@@ -524,7 +523,7 @@ class A2AAgentClient:
                         output = result.get("stdout", result.get("content", str(result)))
                         out_str = str(output)
                         if len(out_str) > 12000:
-                            out_str = out_str[:12000] + "\n...[truncated]..."
+                            out_str = out_str[:400000] + "\n...[truncated]..."
                         feedback_parts.append(
                             f"Tool: {tool_name}\nSucces: {success}\nOutput:\n{out_str}"
                         )
@@ -621,11 +620,14 @@ class A2AAgentClient:
         return self._execute_task_loop(manifest)
 
     def _execute_task_loop(self, manifest: TaskManifest) -> Optional[dict]:
-        """Boucle d'exécution de la tâche avec support des outils."""
-        iteration = 0
-        max_iterations = getattr(self, "_max_iterations", 12) or 12
+        """Boucle d'exécution de la tâche avec support des outils.
 
-        while iteration < max_iterations and not self._interrupted:
+        Pas de plafond d'itérations : la boucle s'arrête sur rapport final,
+        erreur définitive ou interruption.
+        """
+        iteration = 0
+
+        while not self._interrupted:
             iteration += 1
 
             if iteration == 1:
@@ -676,9 +678,9 @@ class A2AAgentClient:
 
         self._status = "idle"
         return {
-            "status": "timeout",
+            "status": "cancelled",
             "task_id": manifest.task_id,
-            "error": "Task execution timed out or was interrupted",
+            "error": "Task interrupted",
         }
 
     def get_progress(self) -> Optional[dict]:
@@ -941,8 +943,12 @@ class A2ATaskScheduler:
                     root = getattr(self._executor, "workspace", None)
                 if root is not None:
                     candidates.append(Path(root))
-            candidates.append(Path.home() / "nemesis-workspace")
-            candidates.append(Path("./workspace"))
+            try:
+                from src.core.paths import USER_CONFIG_DIR
+
+                candidates.append(Path(USER_CONFIG_DIR))
+            except Exception:
+                candidates.append(Path.home() / ".config" / "nemesis-cli")
             for base in candidates:
                 try:
                     d = Path(base).expanduser().resolve() / "a2a_reports"
@@ -1171,7 +1177,7 @@ class A2ATaskScheduler:
         agent_name: str,
         result: dict,
     ) -> Optional[Path]:
-        """Write a human-readable report under workspace/a2a_reports/."""
+        """Write a human-readable report under <start dir>/a2a_reports/."""
         try:
             reports_dir = self._ensure_reports_dir()
             status = str((result or {}).get("status", "unknown"))
