@@ -13,7 +13,7 @@ Trois surfaces partagent le **même moteur**, les **mêmes outils** et la **mêm
 - **Web** — `web/` (backend FastAPI + frontend React/Vite)
 - **Telegram** — `telegram_bot.py` (bot, mémoire partagée)
 
-Développé par **Ekoue TETE** (TEJF). Licence : voir `LICENSE`. Version : `2.2.1` (`pyproject.toml`).
+Développé par **Ekoue TETE** (TEJF). Licence : voir `LICENSE`. Version : `2.2.2` (`pyproject.toml`).
 
 ---
 
@@ -175,6 +175,12 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
 - `apply_patch` : moteur d'application intégré (aucune dépendance au cwd), `workdir`, chemins
   absolus, multi-hunks/multi-fichiers, création/suppression, `dry_run`, erreurs explicites.
 - Exécuteur historique (`tools.py`) aligné : alias `path`/`file_path`, `cd` persistant, exit code.
+- Résolveur de chemin unique `resolve_target_path()` partagé par `write_file`, `edit`,
+  `read_file`, `delete_file` et l'exécuteur historique : `path`, `file_path`, `filename`
+  sont interchangeables, dossier + nom de fichier sont joints, dossier seul = erreur.
+- PTY réservé aux programmes interactifs (`_looks_interactive`) : plus de `cd` perdu ni de
+  sortie vide quand une commande contient `node` ou `read`.
+- `apply_patch` : `workdir` → shell → ancêtres → racine du projet → `$HOME`.
 - `nemesis --check` : auto-vérification des correctifs + chemin des modules chargés
   (distingue un correctif absent d'un paquet installé obsolète ou d'un serveur non redémarré).
 - Docs `Non publié` : voir `docs/CHANGELOG.md`.

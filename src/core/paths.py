@@ -231,6 +231,89 @@ def resolve_path(path_str, base=None) -> str:
         return os.path.normpath(str(p))
 
 
+# Noms d'arguments que le modèle utilise pour désigner le fichier cible.
+PATH_ALIASES = ("file_path", "path", "filename", "file", "target_file")
+
+
+def resolve_target_path(*candidates, base=None) -> str:
+    """Resolve the single file targeted by several path aliases.
+
+    The model sometimes sends ``path`` pointing to a *directory* together with
+    ``filename`` holding the file name, or an absolute path in one alias and a
+    relative one in another. Rules, applied in this order:
+
+    1. first candidate is an **existing directory** and another candidate is a
+       bare file name → join them (``path=/projet`` + ``filename=app.py``);
+    2. an existing **file** among the candidates;
+    3. a candidate that looks like a file (it has a suffix) and is not a
+       directory;
+    4. an existing directory alone → returned unchanged, so the caller reports
+       "path is a directory" instead of writing into a default folder;
+    5. first candidate without a suffix plus a bare file name → join them, so a
+       directory that does not exist yet is still created as a directory.
+
+    Relative candidates resolve from ``base`` (default: the live shell
+    directory), never from the interpreter working directory.
+
+    Returns ``""`` when no candidate holds a usable path.
+    """
+    cleaned = []
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        text = str(candidate).strip()
+        if text:
+            cleaned.append(text)
+    if not cleaned:
+        return ""
+
+    expanded = [os.path.expandvars(os.path.expanduser(text)) for text in cleaned]
+    resolved = [resolve_path(text, base) for text in expanded]
+
+    def _simple_name(candidate: str) -> bool:
+        return (
+            os.sep not in candidate
+            and "/" not in candidate
+            and candidate not in (".", "..")
+        )
+
+    # 1) explicit directory + bare file name
+    first = expanded[0]
+    if os.path.isdir(resolve_path(first, base)):
+        for index, other in enumerate(expanded[1:], start=1):
+            if os.path.isabs(other) or not _simple_name(other):
+                continue
+            return resolve_path(os.path.join(resolved[0], other), base)
+
+    # 2) an existing file wins
+    for text, path in zip(expanded, resolved):
+        if os.path.isfile(path):
+            return path
+
+    # 3) a candidate that looks like a file (suffix, not a directory). A bare
+    #    name ("app.py") is skipped when another alias may be its directory.
+    for text, path in zip(expanded, resolved):
+        if len(expanded) >= 2 and _simple_name(text):
+            continue
+        name = os.path.basename(path)
+        if "." in name[1:] and not os.path.isdir(path):
+            return path
+
+    # 4) an existing directory alone
+    for path in resolved:
+        if os.path.isdir(path):
+            return path
+
+    # 5) a directory that does not exist yet + a bare file name
+    if len(expanded) >= 2 and "." not in os.path.basename(resolved[0])[1:]:
+        for other in expanded[1:]:
+            if os.path.isabs(other) or not _simple_name(other):
+                continue
+            return resolve_path(os.path.join(resolved[0], other), base)
+
+    return resolved[0]
+
+
 def resolve_existing_path(path_str, base=None, fallback_base=None) -> str:
     """Resolve a path anywhere on the system.
 
