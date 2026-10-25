@@ -30,6 +30,7 @@ export interface ChatMessage {
   status?: "pending" | "running" | "done" | "denied";
   success?: boolean;
   output?: string;
+  exitCode?: number;
   at: number;
   startedAt?: number;
   duration?: number;
@@ -760,7 +761,14 @@ case "status": {
       set({
         messages: state.messages.map((m) =>
           target && m.id === target.id
-            ? { ...m, status: "done", success, output: payload.output, duration: payload.duration }
+            ? {
+                ...m,
+                status: "done",
+                success,
+                output: payload.output,
+                exitCode: payload.exit_code,
+                duration: payload.duration,
+              }
             : m,
         ),
         logs: [

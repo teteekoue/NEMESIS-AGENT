@@ -64,6 +64,7 @@ def tool_card(
     accent: str = Catppuccin.PEACH,
     width: int = 100,
     truncate: bool = True,
+    status_detail: str = "",
 ) -> list:
     """Carte d'outil sans cadre : en-tete + corps derriere la gouttiere."""
     icon = "\u2713" if success else "\u2717"
@@ -76,6 +77,8 @@ def tool_card(
     head.append("   " + icon + " ", style=status_style)
     if duration is not None:
         head.append(f"{duration:.1f}s", style="tool.dim")
+    if status_detail:
+        head.append(f" · {status_detail}", style="tool.dim")
 
     shown, hidden = preview_lines(body, TOOL_OUTPUT_PREVIEW_LINES) if truncate else (body, 0)
     rows: list = [head]

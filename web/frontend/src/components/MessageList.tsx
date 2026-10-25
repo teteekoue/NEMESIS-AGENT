@@ -7,7 +7,7 @@ import { useElapsed } from "@/hooks/useElapsed";
 import { formatDuration } from "@/lib/utils";
 
 const SUGGESTIONS = [
-  { icon: Terminal, title: "Explorer le système", prompt: "Liste les fichiers du workspace et décris la structure du projet." },
+  { icon: Terminal, title: "Explorer le système", prompt: "Liste les fichiers du répertoire courant et décris la structure du projet." },
   { icon: Wrench, title: "Créer un script", prompt: "Écris un script bash qui sauvegarde un dossier avec la date dans le nom." },
   { icon: FolderTree, title: "Analyser un projet", prompt: "Analyse le projet courant et propose une architecture de dossiers claire." },
   { icon: Sparkles, title: "Automatiser une tâche", prompt: "Propose et exécute une tâche d'administration Linux utile." },

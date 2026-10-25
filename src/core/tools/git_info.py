@@ -50,10 +50,10 @@ def git_info(
     path: Optional[str] = None,
     limit: int = 20,
 ) -> GitResult:
-    from ..paths import resolve_existing_path
+    from ..paths import resolve_existing_path, system_base_dir
 
     action = (action or "status").lower().strip()
-    cwd = os.getcwd()
+    cwd = str(system_base_dir())
     if path:
         candidate = resolve_existing_path(path)
         if os.path.isdir(candidate):

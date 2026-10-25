@@ -2,4 +2,6 @@ provider:
   type: nemapi
   model: qwen-chat
 security:
-  workspace: ~/nemesis-workspace
+  # Répertoire de départ (facultatif). Vide = répertoire courant.
+  # L'agent n'est plus confiné : il peut agir partout sur le système.
+  workspace: ""

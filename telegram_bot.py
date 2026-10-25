@@ -105,7 +105,7 @@ def load_chat_config(chat_id: int) -> Dict[str, Any]:
     default_config = {
         "provider": {"type": "nemapi"},
         "nemapi": {"host": "127.0.0.1", "port": 8080, "model": ""},
-        "security": {"workspace": str(Path("./workspace").resolve())},
+        "security": {"workspace": str(Path.cwd())},
     }
     
     if not config_path.exists():
@@ -170,11 +170,11 @@ def save_chat_config(chat_id: int, config: Dict[str, Any]) -> bool:
 class NemesisTelegramBot:
     """Bot Telegram qui integre l'agent NEMESIS-CLI."""
 
-    def __init__(self, token: str, workspace: str = "./workspace",
+    def __init__(self, token: str, workspace: str | None = None,
                  default_config: Optional[Dict[str, Any]] = None):
         """Initialise le bot Telegram NEMESIS."""
         self.token = token
-        self.workspace = workspace
+        self.workspace = workspace or str(Path.cwd())
         defaults = default_config or {}
         default_nemapi = defaults.get("nemapi", {}) if isinstance(defaults, dict) else {}
         self.default_nemapi = {
@@ -993,10 +993,11 @@ class NemesisTelegramBot:
             current_input = message
             current_role = "user"
             iteration = 0
-            max_iterations = 10
             last_ai_text = ""  # Stocke le dernier message de l'IA
-            
-            while iteration < max_iterations:
+
+            # No iteration ceiling: the loop ends when the model stops calling
+            # tools, when the provider fails, or when the user interrupts.
+            while True:
                 iteration += 1
                 
                 # Envoyer à l'IA
@@ -1059,19 +1060,13 @@ class NemesisTelegramBot:
                         await self._cleanup_thinking_message(context, chat_id, status_msg)
                         return
                     tool_result = await self._execute_tool(act_type, act_content, chat_id, context)
+                    from src.core.agent_tools import format_tool_feedback
                     if isinstance(tool_result, dict):
-                        if tool_result.get('success'):
-                            feedback_parts.append(
-                                f"Tool: {act_type}\nSuccess: true\nOutput:\n"
-                                f"{tool_result.get('content', tool_result.get('output', 'OK'))}"
-                            )
-                        else:
-                            feedback_parts.append(
-                                f"Tool: {act_type}\nSuccess: false\nError:\n"
-                                f"{tool_result.get('error', 'Erreur inconnue')}"
-                            )
+                        feedback_parts.append(format_tool_feedback(act_type, tool_result))
                     else:
-                        feedback_parts.append(f"Tool: {act_type}\nSuccess: true\nOutput:\n{tool_result}")
+                        feedback_parts.append(
+                            format_tool_feedback(act_type, {"success": True, "stdout": str(tool_result)})
+                        )
 
                 current_input = "FEEDBACK:\n" + "\n\n".join(feedback_parts)
                 current_role = "tool_result"
@@ -1182,16 +1177,36 @@ class NemesisTelegramBot:
                 # En cas d'erreur Markdown, envoyer sans formatage
                 await context.bot.send_message(chat_id=chat_id, text=part)
 
+    def _tool_result_text(self, result: Dict[str, Any]) -> str:
+        """Texte d'un résultat d'outil: sortie, stderr et code de sortie."""
+        stdout = (
+            result.get("stdout")
+            or result.get("output")
+            or result.get("content")
+            or ""
+        )
+        stderr = result.get("error") or result.get("stderr") or ""
+        exit_code = result.get("exit_code", result.get("returncode"))
+        parts = []
+        text = str(stdout)
+        if text:
+            parts.append(text)
+        if stderr and str(stderr) not in text:
+            parts.append(f"[stderr] {stderr}")
+        if exit_code is not None and f"exit code: {exit_code}" not in text:
+            parts.append(f"[exit {exit_code}]")
+        block = "\n".join(parts) or "[aucune sortie]"
+        if len(block) > 10000:
+            block = block[:10000] + "\n\n... (tronqué)"
+        return block
+
     def _format_tool_result_for_display(self, tool_result: Dict[str, Any]) -> str:
         """Formate un résultat d'outil (dict) en chaîne pour affichage."""
         if isinstance(tool_result, dict):
-            if not tool_result.get('success', True):
-                error = tool_result.get('error', 'Erreur inconnue')
-                return f"[ERROR] Erreur outil: {error}"
-            content = tool_result.get('content', tool_result.get('output', 'OK'))
-            if isinstance(content, str) and len(content) > 10000:  # 10 Ko - augmente de 3 Ko
-                content = content[:10000] + "\n\n... (tronque)"
-            return str(content)
+            body = self._tool_result_text(tool_result)
+            if not tool_result.get("success", True):
+                return f"[ERROR] Erreur outil:\n{body}"
+            return body
         return str(tool_result)
 
     def _normalize_parameters(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
@@ -1224,14 +1239,10 @@ class NemesisTelegramBot:
             return '\n'.join(output_parts)
         
         if isinstance(result, dict):
+            body = self._tool_result_text(result)
             if result.get('success'):
-                content = result.get('content', result.get('output', result.get('stdout', 'OK')))
-                if isinstance(content, str) and len(content) > 10000:  # 10 Ko
-                    content = content[:10000] + "\n\n... (tronque)"
-                return content
-            else:
-                error = result.get('error', result.get('message', 'Erreur inconnue'))
-                return f"[ERROR] Erreur: {error}"
+                return body
+            return f"[ERROR] Erreur:\n{body}"
         
         if isinstance(result, str):
             if len(result) > 10000:  # 10 Ko
@@ -1380,9 +1391,13 @@ class NemesisTelegramBot:
                 # Construire le feedback
                 if isinstance(tool_result, dict):
                     if tool_result.get('success'):
-                        feedback = f"FEEDBACK:\nTool: {act_type}\nSuccess: true\nOutput:\n{tool_result.get('content', tool_result.get('output', 'OK'))}"
+                        from src.core.agent_tools import format_tool_feedback
+                        feedback = "FEEDBACK:\n" + format_tool_feedback(act_type, tool_result)
                     else:
-                        feedback = f"FEEDBACK:\nTool: {act_type}\nSuccess: false\nError:\n{tool_result.get('error', 'Erreur inconnue')}"
+                        from src.core.agent_tools import format_tool_feedback
+                        feedback = "FEEDBACK:\n" + format_tool_feedback(
+                            act_type, {"success": False, "error": tool_result.get('error', 'Erreur inconnue')}
+                        )
                 else:
                     feedback = f"FEEDBACK:\nTool: {act_type}\nSuccess: true\nOutput:\n{str(tool_result)}"
                 
@@ -1545,7 +1560,7 @@ def main():
     """Point d'entree principal."""
     config = load_bot_config()
     token = os.getenv('TELEGRAM_BOT_TOKEN') or config.get('token')
-    workspace = config.get('workspace', './workspace')
+    workspace = config.get('workspace') or os.getcwd()
 
     if not token:
         token = _prompt_token_interactive()
@@ -1559,7 +1574,11 @@ def main():
 
     if config.get('workspace'):
         workspace = config['workspace']
-    
+
+    from src.core.paths import set_session_cwd
+
+    set_session_cwd(workspace)
+
     bot = NemesisTelegramBot(token=token, workspace=workspace, default_config=config)
     
     try:

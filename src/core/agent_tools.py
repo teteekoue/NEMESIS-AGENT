@@ -106,8 +106,12 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
     registry.register(
         name="read_file",
         kind=ToolKind.READ,
-        handler=lambda path=None, paths=None, offset=None, limit=None: read_file(
-            _ws, path=path, paths=paths, offset=offset, limit=limit
+        handler=lambda path=None, paths=None, offset=None, limit=None, file_path=None, filename=None, **kwargs: read_file(
+            _ws,
+            path=path or file_path or filename or kwargs.get("file"),
+            paths=paths,
+            offset=offset,
+            limit=limit,
         ),
         description=READ_DESC,
         params_schema={
@@ -122,6 +126,14 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
                     "items": {"type": "string"},
                     "description": "List of file paths to read in batch (relative or absolute).",
                 },
+                "file_path": {
+                    "type": "string",
+                    "description": "Alias for 'path'.",
+                },
+                "filename": {
+                    "type": "string",
+                    "description": "Alias for 'path'.",
+                },
                 "offset": {
                     "type": "integer",
                     "description": "Line number to start reading from (1-indexed). Applies to each file.",
@@ -134,6 +146,8 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
             "anyOf": [
                 {"required": ["path"]},
                 {"required": ["paths"]},
+                {"required": ["file_path"]},
+                {"required": ["filename"]},
             ],
         },
         param_names={"path": "path", "offset": "offset", "limit": "limit"},
@@ -142,22 +156,26 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
     registry.register(
         name="edit",
         kind=ToolKind.EDIT,
-        handler=lambda file_path=None, old_string=None, new_string=None, replace_all=False, path=None, **kwargs: search_replace(
-            file_path or path or kwargs.get('file', ''),
+        handler=lambda file_path=None, old_string=None, new_string=None, replace_all=False, path=None, filename=None, **kwargs: search_replace(
+            file_path or path or filename or kwargs.get('file', ''),
             old_string,
             new_string,
             _ws,
             replace_all
         ),
-        description=EDIT_DESC + " Accepte aussi 'path' comme alias de 'file_path'.",
+        description=EDIT_DESC + " Accepts 'path' as an alias of 'file_path'; any absolute path is allowed.",
         params_schema={
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "The path to the file to modify.",
+                    "description": "The path to the file to modify (relative or absolute).",
                 },
                 "path": {
+                    "type": "string",
+                    "description": "The path to the file to modify (alias).",
+                },
+                "filename": {
                     "type": "string",
                     "description": "The path to the file to modify (alias).",
                 },
@@ -175,6 +193,11 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
                 },
             },
             "required": ["old_string", "new_string"],
+            "anyOf": [
+                {"required": ["file_path"]},
+                {"required": ["path"]},
+                {"required": ["filename"]},
+            ],
         },
         param_names={
             "old_string": "old_string",
@@ -191,36 +214,53 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
             content,
             _ws
         ),
-        description="Write content to a file (creates or overwrites). Accepts: file_path, path, filename.",
+        description=(
+            "Write content to a file (creates parent directories and overwrites). "
+            "The path is honored exactly: relative paths resolve from the current shell "
+            "directory and any absolute path anywhere on the machine is accepted. "
+            "Accepts file_path, path or filename."
+        ),
         params_schema={
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the file to write.",
+                    "description": "Path of the file to write (relative or absolute).",
                 },
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to write (alias).",
+                    "description": "Path of the file to write (alias).",
                 },
                 "filename": {
                     "type": "string",
-                    "description": "Path to the file to write (alias).",
+                    "description": "Path of the file to write (alias).",
                 },
                 "content": {
                     "type": "string",
-                    "description": "Content to write to the file.",
+                    "description": "Full content to write to the file.",
                 },
             },
             "required": ["content"],
+            "anyOf": [
+                {"required": ["file_path"]},
+                {"required": ["path"]},
+                {"required": ["filename"]},
+            ],
         },
     )
 
     registry.register(
         name="bash",
         kind=ToolKind.EXECUTE,
-        handler=lambda command, description="", timeout=None, is_background=False, workdir=None: run_bash(
-            _make_bash_input(command, description, timeout, is_background, workdir), _ws
+        handler=lambda command, description="", timeout=None, is_background=False, workdir=None, timeout_ms=None, cwd=None, background=None, **kwargs: run_bash(
+            _make_bash_input(
+                command,
+                description,
+                timeout if timeout is not None else timeout_ms,
+                is_background if background is None else bool(background),
+                workdir or cwd,
+                timeout_is_ms=timeout is None and timeout_ms is not None,
+            )
         ),
         description=BASH_DESC,
         params_schema={
@@ -236,7 +276,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in SECONDS. Always set it to fit the command: 10-30s for quick inspection, 60-600s for builds/tests/installs. Minimum 10, maximum 600, default 120. Ignored for is_background=true.",
+                    "description": "Timeout in SECONDS. 10-30s for quick inspection, longer for builds/tests/installs. Minimum 10, default 600, up to one week. Ignored for is_background=true.",
                 },
                 "is_background": {
                     "type": "boolean",
@@ -244,7 +284,19 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
                 },
                 "workdir": {
                     "type": "string",
-                    "description": "Working directory for the command.",
+                    "description": "Directory to run the command in (relative or absolute). Defaults to the persistent shell directory.",
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Alias for workdir.",
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Alias for timeout, expressed in MILLISECONDS.",
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Alias for is_background.",
                 },
             },
             "required": ["command"],
@@ -293,7 +345,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
         name="grep",
         kind=ToolKind.SEARCH,
         handler=lambda pattern, include=None, path=None, case_insensitive=False: grep(
-            _make_grep_input(pattern, include, path, case_insensitive), _ws
+            _make_grep_input(pattern, include, path, case_insensitive)
         ),
         description=GREP_DESC,
         params_schema={
@@ -309,7 +361,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory or file to search in. Defaults to workspace.",
+                    "description": "Directory or file to search in (relative or absolute). Defaults to the current shell directory.",
                 },
                 "case_insensitive": {
                     "type": "boolean",
@@ -324,7 +376,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
         name="list_dir",
         kind=ToolKind.LIST_DIR,
         handler=lambda path=None, depth=2: list_dir(
-            _make_listdir_input(path, depth), _ws
+            _make_listdir_input(path, depth)
         ),
         description=LIST_DIR_DESC,
         params_schema={
@@ -332,7 +384,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory to list. Defaults to workspace root.",
+                    "description": "Directory to list (relative or absolute). Defaults to the current shell directory.",
                 },
                 "depth": {
                     "type": "integer",
@@ -390,13 +442,13 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
     registry.register(
         name="glob",
         kind=ToolKind.SEARCH,
-        handler=lambda pattern, path=None, max_results=200: glob_files(pattern, _ws, path=path, max_results=max_results),
+        handler=lambda pattern, path=None, max_results=200: glob_files(pattern, None, path=path, max_results=max_results),
         description=GLOB_DESC,
         params_schema={
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "description": "Glob pattern, e.g. **/*.py"},
-                "path": {"type": "string", "description": "Root directory to search (default: workspace)"},
+                "path": {"type": "string", "description": "Root directory to search (default: current shell directory)"},
                 "max_results": {"type": "integer", "description": "Max files to return (default 200)"},
             },
             "required": ["pattern"],
@@ -406,7 +458,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
     registry.register(
         name="git",
         kind=ToolKind.EXECUTE,
-        handler=lambda action="status", path=None, limit=20: git_info(action, _ws, path=path, limit=limit),
+        handler=lambda action="status", path=None, limit=20: git_info(action, None, path=path, limit=limit),
         description=GIT_DESC,
         params_schema={
             "type": "object",
@@ -423,7 +475,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
         name="todo",
         kind=ToolKind.PLAN,
         handler=lambda action="list", content=None, items=None, id=None, status=None, force=False: todo(
-            action, _ws, content=content, items=items, id=id, status=status, force=force
+            action, None, content=content, items=items, id=id, status=status, force=force
         ),
         description=TODO_DESC,
         params_schema={
@@ -443,7 +495,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
     registry.register(
         name="apply_patch",
         kind=ToolKind.EDIT,
-        handler=lambda patch, dry_run=False: apply_patch(patch, _ws, dry_run=dry_run),
+        handler=lambda patch, dry_run=False: apply_patch(patch, None, dry_run=dry_run),
         description=PATCH_DESC,
         params_schema={
             "type": "object",
@@ -462,7 +514,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
             target_file or path or file_path or kwargs.get('file', ''),
             _ws
         ),
-        description="Delete a file at the specified path. Accepte 'target_file', 'path' ou 'file_path'.",
+        description="Delete a file or directory at the specified path anywhere on the machine. Accepts target_file, path or file_path.",
         params_schema={
             "type": "object",
             "properties": {
@@ -808,6 +860,10 @@ def build_system_prompt(registry: ToolRegistry) -> str:
     return prompt
 
 
+_FEEDBACK_CONTENT_LIMIT = 400_000  # chars sent back to the model per field
+_FEEDBACK_LIST_LIMIT = 5_000
+
+
 def build_feedback(tool_name: str, result: Any) -> str:
     """Format tool result as feedback for the LLM."""
     from dataclasses import fields
@@ -827,13 +883,17 @@ def build_feedback(tool_name: str, result: Any) -> str:
         if mfc.failed_files:
             for ff in mfc.failed_files:
                 parts.append(f"  ⚠ {ff['path']}: {ff['error']}")
-        for fc in mfc.files[:10]:
-            short = fc.content[:5000].replace("\n", "\\n")  # 5 Ko - augmente de 300
+        for fc in mfc.files[:50]:
+            short = fc.content[:_FEEDBACK_CONTENT_LIMIT]
             parts.append(f"--- {os.path.basename(fc.absolute_path)} ({fc.total_lines} lines) ---")
             parts.append(short)
-            if len(fc.content) > 5000:
-                parts.append("... (truncated)")
+            if len(fc.content) > _FEEDBACK_CONTENT_LIMIT:
+                parts.append(f"... (truncated at {_FEEDBACK_CONTENT_LIMIT} chars)")
         return "\n".join(parts)
+
+    exit_code = getattr(result, "exit_code", None)
+    if exit_code is not None:
+        parts.append(f"Exit code: {exit_code}")
 
     for f in fields(cls):
         val = getattr(result, f.name)
@@ -844,25 +904,29 @@ def build_feedback(tool_name: str, result: Any) -> str:
         if f.name in ("matches", "files") and isinstance(val, list):
             label = "Matches" if f.name == "matches" else "Files"
             parts.append(f"{label} ({len(val)}):")
-            for m in val[:100]:
+            for m in val[:_FEEDBACK_LIST_LIMIT]:
                 parts.append(f"  {m}")
-            if len(val) > 100:
-                parts.append(f"  ... and {len(val) - 100} more")
+            if len(val) > _FEEDBACK_LIST_LIMIT:
+                parts.append(f"  ... and {len(val) - _FEEDBACK_LIST_LIMIT} more")
         elif f.name == "results" and isinstance(val, list):
             for r in val:
                 if isinstance(r, dict):
                     parts.append(f"  - {r.get('title', '')}: {r.get('url', '')}")
                     if r.get("snippet"):
                         parts.append(f"    {r['snippet'][:200]}")
-        elif f.name in ("content", "output") and isinstance(val, str) and len(val) > 10000:
-            parts.append(f"{f.name}: {val[:10000]}")  # 10 Ko - augmente de 2 Ko
-            parts.append("... (truncated)")
+        elif f.name in ("content", "output") and isinstance(val, str) and len(val) > _FEEDBACK_CONTENT_LIMIT:
+            parts.append(f"{f.name}: {val[:_FEEDBACK_CONTENT_LIMIT]}")
+            parts.append(f"... (truncated at {_FEEDBACK_CONTENT_LIMIT} chars)")
         elif f.name in ("content", "output", "message") and isinstance(val, str) and val:
             parts.append(f"{f.name}: {val}")
         elif f.name in ("content", "output") and hasattr(val, "__dataclass_fields__"):
             fc = val
             if hasattr(fc, "content") and fc.content:
-                c = fc.content if len(fc.content) <= 10000 else fc.content[:10000] + "\n... (truncated)"  # 10 Ko
+                c = (
+                    fc.content
+                    if len(fc.content) <= _FEEDBACK_CONTENT_LIMIT
+                    else fc.content[:_FEEDBACK_CONTENT_LIMIT] + "\n... (truncated)"
+                )
                 parts.append(f"content: {c}")
             if hasattr(fc, "total_lines"):
                 parts.append(f"total_lines: {fc.total_lines}")
@@ -878,7 +942,55 @@ def build_feedback(tool_name: str, result: Any) -> str:
     return "\n".join(parts)
 
 
-def _write_file(file_path: str, content: str, workspace_dir: str) -> object:
+_APPEND_PREFIX = "__APPEND__:"
+
+
+def format_tool_feedback(tool_name: str, result: Any, max_chars: int = 10_000_000) -> str:
+    """Uniform model feedback for every surface (CLI, Web, Telegram).
+
+    Always exposes the exit code, stderr and a signal/timeout marker so an empty
+    stdout is never mistaken for a successful silent command.
+    """
+    if not isinstance(result, dict):
+        return f"Tool: {tool_name}\nSuccess: {getattr(result, 'success', False)}\nOutput:\n{result}"
+
+    output = result.get("stdout")
+    if output is None or output == "":
+        output = result.get("output")
+    if output is None or output == "":
+        output = result.get("content")
+    output = "" if output is None else str(output)
+
+    error = result.get("error") or result.get("stderr") or ""
+    error = "" if error is None else str(error)
+    exit_code = result.get("exit_code", result.get("returncode"))
+    signal_name = result.get("signal")
+
+    if len(output) > max_chars:
+        output = output[:max_chars] + "\n\n[SYSTEM: output truncated]"
+
+    if not output and not error:
+        if exit_code is not None:
+            output = f"[no output captured — exit code: {exit_code}]"
+        elif signal_name:
+            output = f"[no output captured — signal: {signal_name}]"
+        else:
+            output = "[no output captured]"
+
+    lines = [f"Tool: {tool_name}", f"Success: {bool(result.get('success', False))}"]
+    if exit_code is not None:
+        lines.append(f"Exit code: {exit_code}")
+    if signal_name:
+        lines.append(f"Signal: {signal_name}")
+    if output:
+        lines.append(f"Output:\n{output}")
+    if error and error not in output:
+        lines.append(f"Error:\n{error}")
+    return "\n".join(lines)
+
+
+def _write_file(file_path: str, content: str, workspace_dir: Optional[str] = None) -> object:
+    """Write content to the exact path requested, anywhere on the system."""
     from dataclasses import dataclass
 
     @dataclass
@@ -886,24 +998,51 @@ def _write_file(file_path: str, content: str, workspace_dir: str) -> object:
         success: bool
         message: str
         error: Optional[str] = None
+        path: Optional[str] = None
 
-    from .paths import resolve_existing_path
+    from .paths import resolve_path
 
-    resolved = resolve_existing_path(file_path, fallback_base=workspace_dir)
+    raw = str(file_path if file_path is not None else "").strip()
+    if not raw:
+        return WriteResult(
+            success=False,
+            message="",
+            error="A file path is required (file_path, path or filename).",
+        )
+    if content is None:
+        return WriteResult(success=False, message="", error="The 'content' parameter is required.")
+
+    text = content if isinstance(content, str) else str(content)
+    append = text.startswith(_APPEND_PREFIX)
+    if append:
+        text = text[len(_APPEND_PREFIX):]
+
+    resolved = resolve_path(raw)
+    if os.path.isdir(resolved):
+        return WriteResult(
+            success=False,
+            message="",
+            error=f"Path is a directory, not a file: {resolved}",
+            path=resolved,
+        )
+
     try:
         os.makedirs(os.path.dirname(resolved) or ".", exist_ok=True)
+        with open(resolved, "a" if append else "w", encoding="utf-8") as handle:
+            handle.write(text)
     except OSError as e:
-        return WriteResult(success=False, message="", error=str(e))
+        return WriteResult(
+            success=False,
+            message="",
+            error=f"Cannot write {resolved}: {e}",
+            path=resolved,
+        )
 
-    try:
-        with open(resolved, "w", encoding="utf-8") as f:
-            f.write(content)
-        return WriteResult(success=True, message=f"File written: {file_path}")
-    except OSError as e:
-        return WriteResult(success=False, message="", error=str(e))
+    action = "Content appended to" if append else "File written"
+    return WriteResult(success=True, message=f"{action}: {resolved}", path=resolved)
 
 
-def _delete_file(target_file: str, workspace_dir: str) -> object:
+def _delete_file(target_file: str, workspace_dir: Optional[str] = None) -> object:
     from dataclasses import dataclass
 
     @dataclass
@@ -911,12 +1050,28 @@ def _delete_file(target_file: str, workspace_dir: str) -> object:
         success: bool
         message: str
         error: Optional[str] = None
+        path: Optional[str] = None
 
-    from .paths import resolve_existing_path
+    from .paths import resolve_path
 
-    resolved = resolve_existing_path(target_file, fallback_base=workspace_dir)
+    raw = str(target_file if target_file is not None else "").strip()
+    if not raw:
+        return DeleteResult(
+            success=False,
+            message="",
+            error="A file path is required (target_file, path or file_path).",
+        )
+
+    resolved = resolve_path(raw)
+    if os.path.abspath(resolved) == os.path.abspath(os.sep):
+        return DeleteResult(
+            success=False,
+            message="",
+            error="Refusing to delete the filesystem root.",
+            path=resolved,
+        )
     if not os.path.exists(resolved):
-        return DeleteResult(success=False, message="", error=f"File not found: {target_file}")
+        return DeleteResult(success=False, message="", error=f"File not found: {resolved}", path=resolved)
 
     try:
         if os.path.isdir(resolved):
@@ -924,17 +1079,32 @@ def _delete_file(target_file: str, workspace_dir: str) -> object:
             shutil.rmtree(resolved)
         else:
             os.remove(resolved)
-        return DeleteResult(success=True, message=f"Deleted: {target_file}")
+        return DeleteResult(success=True, message=f"Deleted: {resolved}", path=resolved)
     except OSError as e:
-        return DeleteResult(success=False, message="", error=str(e))
+        return DeleteResult(success=False, message="", error=str(e), path=resolved)
 
 
-def _make_bash_input(command, description="", timeout=None, is_background=False, workdir=None):
-    from .tools.bash import BashInput, timeout_seconds_to_ms
+def _make_bash_input(
+    command,
+    description="",
+    timeout=None,
+    is_background=False,
+    workdir=None,
+    timeout_is_ms=False,
+):
+    from .tools.bash import BashInput, timeout_seconds_to_ms, _MAX_TIMEOUT_MS, _DEFAULT_TIMEOUT_MS
+    if timeout_is_ms and timeout is not None:
+        try:
+            milliseconds = int(timeout)
+        except (TypeError, ValueError):
+            milliseconds = _DEFAULT_TIMEOUT_MS
+        milliseconds = max(1000, min(_MAX_TIMEOUT_MS, milliseconds))
+    else:
+        milliseconds = timeout_seconds_to_ms(timeout)
     return BashInput(
         command=command,
         description=description or "",
-        timeout_ms=timeout_seconds_to_ms(timeout),
+        timeout_ms=milliseconds,
         is_background=is_background,
         workdir=workdir,
     )

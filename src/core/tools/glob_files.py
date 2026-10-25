@@ -7,7 +7,7 @@ import fnmatch
 from dataclasses import dataclass
 from typing import Optional, List
 
-from ..paths import resolve_existing_path
+from ..paths import resolve_existing_path, system_base_dir
 
 
 @dataclass
@@ -19,7 +19,7 @@ class GlobResult:
 
 
 DESCRIPTION_FULL = """Find files matching a glob pattern (e.g. **/*.py, src/**/*.ts).
-- Recurses from the given path (default: workspace root).
+- Recurses from the given path (default: current shell directory).
 - Accepts absolute paths anywhere on the system; relative paths resolve from the current directory.
 - Respects .gitignore when present.
 - Returns paths relative to the searched root."""
@@ -42,7 +42,7 @@ def _load_gitignore_names(root: str) -> set:
 
 def glob_files(
     pattern: str,
-    workspace_dir: str,
+    workspace_dir: Optional[str] = None,
     path: Optional[str] = None,
     max_results: int = 200,
 ) -> GlobResult:
@@ -50,9 +50,9 @@ def glob_files(
         return GlobResult(success=False, files=[], message="pattern is required")
 
     root = (
-        resolve_existing_path(path, fallback_base=workspace_dir)
+        resolve_existing_path(path)
         if path
-        else os.path.abspath(workspace_dir)
+        else str(workspace_dir or system_base_dir())
     )
     if not os.path.isdir(root):
         return GlobResult(success=False, files=[], message=f"Path not found: {path or '.'}")

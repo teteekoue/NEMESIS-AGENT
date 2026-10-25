@@ -83,7 +83,8 @@ class TestTimeoutSeconds:
         assert timeout_seconds_to_ms(9) == _MIN_TIMEOUT_S * 1000
 
     def test_maximum_enforced(self):
-        assert timeout_seconds_to_ms(99999) == _MAX_TIMEOUT_S * 1000
+        assert timeout_seconds_to_ms(_MAX_TIMEOUT_S * 10) == _MAX_TIMEOUT_S * 1000
+        assert _MAX_TIMEOUT_S >= 24 * 3600  # no short ceiling any more
 
     def test_valid_value_passed_through(self):
         assert timeout_seconds_to_ms(45) == 45_000

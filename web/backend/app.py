@@ -32,6 +32,15 @@ from web.backend.config_store import (
 
 app = FastAPI(title="NEMESIS Web API", version="1.0.0")
 
+# The shared shell directory starts at the configured starting point (or the
+# process directory). It is never a sandbox: any path can be used afterwards.
+try:
+    from src.core.paths import set_session_cwd
+
+    set_session_cwd(workspace_path())
+except Exception:
+    pass
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -61,7 +70,7 @@ class SubagentsConfigIn(BaseModel):
     name: Optional[str] = None
     id: Optional[str] = None
     max_concurrent: int = 4
-    max_iterations: int = 12
+    max_iterations: int = 0
     timeout_seconds: int = 180
     max_retries: int = 3
     max_tokens_per_task: int = 24000
@@ -337,13 +346,21 @@ def set_github(payload: GithubConfigIn) -> Dict[str, Any]:
 # workspace files
 # ----------------------------------------------------------------------
 def _resolve_workspace_path(rel: Optional[str]) -> Path:
-    ws = workspace_path()
-    if not rel or rel in (".", "/"):
-        return ws
-    candidate = (ws / rel.lstrip("/")).resolve()
-    if candidate != ws and ws not in candidate.parents:
-        raise HTTPException(status_code=403, detail="Chemin hors du workspace.")
-    return candidate
+    """Resolve any path on the host: the explorer is no longer sandboxed."""
+    from src.core.paths import resolve_path
+
+    raw = (rel or "").strip()
+    if not raw:
+        return workspace_path()
+    return Path(resolve_path(raw))
+
+
+def _display_path(target: Path) -> str:
+    """Relative label when the path is under the starting dir, absolute otherwise."""
+    try:
+        return str(target.relative_to(workspace_path()))
+    except ValueError:
+        return str(target)
 
 
 @app.get("/api/files")
@@ -361,13 +378,16 @@ def list_files(path: str = Query("")) -> Dict[str, Any]:
             continue
         entries.append({
             "name": child.name,
-            "path": str(child.relative_to(workspace_path())),
+            "path": _display_path(child),
             "is_dir": child.is_dir(),
             "size": stat.st_size,
             "modified": stat.st_mtime,
         })
-    rel = "" if target == workspace_path() else str(target.relative_to(workspace_path()))
-    return {"path": rel, "entries": entries}
+    return {
+        "path": "" if target == workspace_path() else _display_path(target),
+        "root": str(workspace_path()),
+        "entries": entries,
+    }
 
 
 @app.get("/api/files/content")
@@ -384,7 +404,7 @@ def read_file(path: str = Query(...)) -> Dict[str, Any]:
         content = raw.decode("utf-8", errors="replace")
         binary = True
     return {
-        "path": str(target.relative_to(workspace_path())),
+        "path": _display_path(target),
         "content": content,
         "truncated": size > MAX_FILE_BYTES,
         "binary": binary,

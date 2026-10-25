@@ -17,19 +17,20 @@ mcp_mgr = MCPManager()
 class ActionExecutor:
     """Executeur d'outils pour NEMESIS CLI - Format JSON natif."""
     
-    def __init__(self, workspace="./workspace", bridge=None):
-        self.workspace_root = Path(workspace).resolve()
+    def __init__(self, workspace=None, bridge=None):
+        raw = str(workspace).strip() if workspace else ""
+        self.workspace_root = Path(raw).expanduser().resolve() if raw else Path.cwd()
         if not self.workspace_root.exists():
-            self.workspace_root.mkdir(parents=True, exist_ok=True)
+            self.workspace_root = Path.cwd()
         self.bridge = bridge
         self.uploader = FileUploader()
         self.processes = {}
         self._waiting_for_input = None
 
     def resolve_path(self, path):
-        raw = os.path.expanduser(str(path).strip())
-        p = Path(raw)
-        return p.resolve() if p.is_absolute() else (Path.cwd() / p).resolve()
+        from src.core.paths import resolve_path as _resolve_path
+
+        return Path(_resolve_path(path))
 
     # =====================================================================
     # NOUVEAU DISPATCH JSON
@@ -82,19 +83,24 @@ class ActionExecutor:
             yield from self.execute_bash_live(command, async_mode)
             return
         try:
+            from src.core.paths import session_cwd
+
             r = subprocess.run(
                 command,
                 shell=True,
                 executable="/bin/bash",
-                cwd=str(self.workspace_root),
+                cwd=str(session_cwd()),
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=3600,
             )
             out = (r.stdout or "") + (("\n" + r.stderr) if r.stderr else "")
-            yield {"success": r.returncode == 0, "stdout": out, "returncode": r.returncode}
+            if not out.strip():
+                out = f"[no output captured — exit code: {r.returncode}]"
+            yield {"success": r.returncode == 0, "stdout": out,
+                   "output": out, "exit_code": r.returncode, "returncode": r.returncode}
         except subprocess.TimeoutExpired:
-            yield {"success": False, "stdout": "[TIMEOUT] Commande > 5 minutes"}
+            yield {"success": False, "stdout": "[TIMEOUT] Commande > 60 minutes", "exit_code": -1, "signal": "timeout"}
         except Exception as e:
             yield {"success": False, "stdout": f"Erreur bash: {e}"}
 
@@ -1557,10 +1563,14 @@ class ActionExecutor:
 
 
 def create_executor_from_config(config, bridge=None):
-    """Create the tool executor bound to the configured workspace."""
-    workspace = config.get("security", {}).get("workspace", ".")
-    if workspace in ("./workspace", "workspace"):
-        workspace = "."
+    """Create the tool executor.
+
+    NEMESIS is no longer confined to a workspace: the configured value is only
+    the starting directory (and an empty value means the process directory).
+    """
+    workspace = str((config.get("security") or {}).get("workspace") or "").strip()
+    if workspace in ("./workspace", "workspace", "."):
+        workspace = os.getcwd()
     from src.core.tool_bridge import ToolBridge
 
-    return ToolBridge(workspace=workspace, config=config)
+    return ToolBridge(workspace=workspace or None, config=config)

@@ -65,6 +65,20 @@ class NemesisApp:
         # Flag pour gérer l'interruption propre
         self._interrupted = False  # True si l'utilisateur a interrompu la tâche en cours
 
+    _MAX_HIDDEN_OUTPUTS = 200
+
+    def _prune_hidden_outputs(self) -> None:
+        """Keep the last outputs only: the loop is unlimited, /tmp must not grow."""
+        while len(self._hidden_outputs) >= self._MAX_HIDDEN_OUTPUTS:
+            oldest = min(self._hidden_outputs)
+            data = self._hidden_outputs.pop(oldest)
+            path = data.get("output_path")
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
     def _record_session_message(self, message: Dict[str, Any]):
         if not self.session_id:
             return
@@ -182,7 +196,7 @@ class NemesisApp:
         self.console.print("[dim]/sessions new · /sessions open <id> · /sessions delete <id>[/dim]")
 
     def _load_config(self):
-        from src.core.paths import resolve_workspace, DEFAULT_WORKSPACE
+        from src.core.paths import resolve_workspace
 
         config_exists = self.config_path.exists()
         needs_save = False
@@ -213,10 +227,10 @@ class NemesisApp:
             self.config["nemapi"] = legacy if isinstance(legacy, dict) else {"host": "127.0.0.1", "port": 8090}
             needs_save = True
         if not isinstance(self.config.get("security"), dict):
-            self.config["security"] = {"workspace": str(DEFAULT_WORKSPACE)}
+            self.config["security"] = {"workspace": str(Path.cwd())}
             needs_save = True
         elif not self.config["security"].get("workspace"):
-            self.config["security"]["workspace"] = str(DEFAULT_WORKSPACE)
+            self.config["security"]["workspace"] = str(Path.cwd())
             needs_save = True
 
         # S'assurer que provider.type existe
@@ -225,9 +239,11 @@ class NemesisApp:
             self.config["provider"].setdefault("model", "qwen-chat")
             needs_save = True
 
-        # Normalize workspace path and ensure directory exists
-        ws = resolve_workspace(self.config)
-        self.config["security"]["workspace"] = str(ws)
+        # Starting directory only: the agent is free to work anywhere.
+        self.config["security"]["workspace"] = str(resolve_workspace(self.config))
+        from src.core.paths import set_session_cwd
+
+        set_session_cwd(self.config["security"]["workspace"])
 
         # Sauvegarder si des valeurs par defaut ont ete ajoutees
         if needs_save:
@@ -372,18 +388,9 @@ class NemesisApp:
                 return False
 
     def _format_feedback(self, action: Dict, res: Dict) -> str:
-        output = res.get('stdout', res.get('content', ''))
-        MAX_CHARS = 10_000_000  # 10 Mo - augmente de 500 Ko
-        if len(output) > MAX_CHARS:
-            output = output[:MAX_CHARS] + "\n\n[AVERTISSEMENT SYSTEME : Logs tronques.]"
-        tool_name = action['type']
-        success = res.get('success', False)
-        
-        # S'assurer que output n'est jamais vide - au minimum un message par défaut
-        if not output:
-            output = "[Aucune sortie capturee - la commande a peut-etre echoue ou n'a produit aucune sortie]"
-        
-        return f"FEEDBACK:\nTool: {tool_name}\nSucces: {success}\nOutput:\n{output}"
+        from src.core.agent_tools import format_tool_feedback
+
+        return "FEEDBACK:\n" + format_tool_feedback(action.get("type", ""), res)
 
     def _ask_system_prompt(self) -> None:
         """Ask whether the system prompt should initialize the NEMAPI session."""
@@ -460,10 +467,12 @@ class NemesisApp:
         current_input = message
         current_role = "user"
         iteration = 0
-        max_tool_iterations = 50
         last_response_hash = None
 
-        while iteration < max_tool_iterations:
+        # No iteration ceiling: an autonomous agent stops only when the model
+        # produces no more tool call, when the user interrupts, or on a
+        # provider error. Progress is still guarded by duplicate detection.
+        while True:
             # Vérifier si interruption demandée
             if self._interrupted:
                 self._interrupted = False
@@ -472,7 +481,7 @@ class NemesisApp:
                 
             iteration += 1
             if self.debug:
-                self.console.print(f"[debug]Iteration {iteration}/{max_tool_iterations}: Envoi (role={current_role})...[/debug]")
+                self.console.print(f"[debug]Iteration {iteration}: Envoi (role={current_role})...[/debug]")
 
             # Thinking animation during LLM call
             anim = self.composer.display_thinking(
@@ -626,6 +635,7 @@ class NemesisApp:
                         )
                         self._output_counter += 1
                         output_id = self._output_counter
+                        self._prune_hidden_outputs()
                         self._hidden_outputs[output_id] = {
                             "command": str(act_content.get("command", "")),
                             "output": str(output),
@@ -667,9 +677,6 @@ class NemesisApp:
             current_input = "FEEDBACK:\n" + "\n\n".join(batch_feedback)
             current_role = "tool_result"
             continue
-
-        if iteration >= max_tool_iterations:
-            self.console.print(f"[error]Limite de {max_tool_iterations} iterations d'outils atteinte. Arret du cycle.[/error]")
 
         # Resume discret du tour : duree, outils, fichiers touches.
         if cycle_tools:

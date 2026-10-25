@@ -78,6 +78,25 @@ nemapi:
 
 Tout est aussi configurable depuis l'interface Web (onglets Connexion, Général, Mémoire, MCP, Skills, Outils, GitHub, Telegram).
 
+### Chemins et autonomie
+
+NEMESIS n'est plus confiné à un « workspace » :
+
+- **Aucun chemin n'est refusé** : `/etc`, `~/projets`, `/tmp`, disques montés… tout est accessible
+  par les outils `read_file`, `write_file`, `edit`, `apply_patch`, `delete_file`, `bash`, etc.
+- Les chemins **relatifs** partent du **répertoire courant du shell**, et ce répertoire est
+  **persistant** : un `cd` effectué dans un appel `bash` reste actif pour les appels suivants.
+  Les paramètres `workdir` / `cwd` permettent de cibler explicitement un autre dossier.
+- **Aucune limite d'itérations** : l'agent travaille jusqu'à ce que le modèle n'appelle plus
+  d'outil, jusqu'à une interruption utilisateur ou une erreur du provider. Les sous-agents
+  acceptent aussi `max_iterations: 0` (= illimité).
+- Chaque résultat d'outil renvoie **stdout, stderr, code de sortie** (et le signal en cas de
+  timeout/interruption), même quand la sortie est vide.
+- `bash` accepte les commandes **multi-lignes, heredocs et guillemets** sans échappement
+  supplémentaire ; les timeouts vont de 10 s à 7 jours (défaut 600 s).
+- Le répertoire courant est partagé par les conversations d'un même processus (CLI, backend Web,
+  bot Telegram) : chaque `cd` influence les appels suivants de ce processus.
+
 - Mémoire persistante : `~/.config/nemesis-cli/memory/` — partagée CLI/Web/Telegram
 - GitHub : `~/.config/nemesis-cli/github.yaml` — génère un serveur **MCP** officiel
 - Telegram : `~/.config/nemesis-cli/telegram_bot.yaml`
@@ -103,7 +122,7 @@ Mode « toutes autorisations » : agent autonome (défaut du bot Telegram).
 | Commande | Description |
 | --- | --- |
 | `/help` | Aide |
-| `/status` | Connexion, modèle, endpoint, workspace |
+| `/status` | Connexion, modèle, endpoint, répertoire de départ |
 | `/models` | Lister / choisir un modèle NEMAPI |
 | `/tools` | Lister les outils |
 | `/config` | Configurer l'URL complète NEMAPI se terminant par `/v1` et son jeton facultatif |
@@ -115,7 +134,7 @@ Mode « toutes autorisations » : agent autonome (défaut du bot Telegram).
 | `/approval` | Choisit le mode de confirmation des outils (`confirm` ou `all`) |
 | `/skills` | Consulte, active ou désactive les compétences |
 | `/subagents` | Consulte et configure les profils et limites des sous-agents |
-| `/files` | Explore l’espace de travail |
+| `/files` | Explore n’importe quel dossier du système |
 | `/integrations` | Consulte ou configure GitHub et Telegram avec saisie masquée des jetons |
 | `/show` | Affiche les sorties complètes des commandes et outils |
 
@@ -153,7 +172,8 @@ Exemple de déclenchement d'outil (le modèle émet du JSON, l'utilisateur valid
 Registre dynamique partagé par CLI, Web, Telegram et sous-agents.
 
 - **Fichiers** : `read_file`, `write_file`, `edit`, `apply_patch`, `list_dir`, `delete_file`
-- **Shell / processus** : `bash` (synchrone/arrière-plan), `kill_task`, `cleanup_logs`
+  (chemins absolus ou relatifs au répertoire courant, sans confinement)
+- **Shell / processus** : `bash` (synchrone/arrière-plan, `cd` persistant, heredocs), `kill_task`, `cleanup_logs`
 - **Recherche** : `glob`, `grep`, `web_search`, `web_fetch`
 - **Mémoire** : `memory_add`, `memory_update`, `memory_search`, `memory_get`, `memory_delete`, `memory_clear`
 - **Planification / sous-agents** : `todo`, `delegate_tasks`, `subagent_status`, `get_task_output`, `skills_list`
@@ -177,7 +197,7 @@ Les sous-agents sont des instances temporaires exécutées en parallèle via une
 ## Interface Web
 
 - Chat en streaming (WebSocket `/ws/chat`), timings par outil et par tour
-- Terminal PTY réel (`/ws/terminal`), explorateur de fichiers du workspace
+- Terminal PTY réel (`/ws/terminal`), explorateur de fichiers de tout le système
 - Sessions persistantes, thème clair/sombre, responsive mobile → desktop
 - Réglages : Connexion, Général, Mémoire, MCP, Skills, Outils, GitHub, Telegram
 

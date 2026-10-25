@@ -283,7 +283,7 @@ def todo_command(args=None):
     workspace = _active_app.config.get("security", {}).get("workspace")
     try:
         from src.core.tools.todo import _load
-        _active_app.composer.display_todo(_load(workspace) if workspace else [])
+        _active_app.composer.display_todo(_load(workspace))
     except (OSError, TypeError) as exc:
         console.print(f"[error]Impossible de charger le plan : {exc}[/error]")
 
@@ -416,7 +416,7 @@ def subagents_command(args=None):
         current = config_store.public_subagents_config()
         fields = (
             ("max_concurrent", "Sous-agents simultanés"),
-            ("max_iterations", "Itérations par tâche"),
+            ("max_iterations", "Itérations par tâche (0 = illimité)"),
             ("timeout_seconds", "Délai maximal (secondes)"),
             ("max_retries", "Tentatives"),
             ("max_tokens_per_task", "Budget tokens par tâche"),
@@ -497,24 +497,31 @@ def subagents_command(args=None):
             "environnement" if profile["api_key_from_env"] else "configurée" if profile["api_key_set"] else "absente",
         )
     console.print(table)
+    iteration_label = (
+        "illimitées" if not settings["max_iterations"] else f"{settings['max_iterations']} itérations"
+    )
     console.print(
         f"Limites : {settings['max_concurrent']} en parallèle · "
-        f"{settings['max_iterations']} itérations · {settings['timeout_seconds']} s"
+        f"{iteration_label} · {settings['timeout_seconds']} s"
     )
+    if not settings["profiles"]:
+        console.print(
+            "[dim]Aucune clé dédiée : les sous-agents réutilisent le provider principal "
+            "quand celui-ci est configuré.[/dim]"
+        )
     console.print("[dim]/subagents limits · /subagents profile add · /subagents profile delete <id>[/dim]")
 
 
-@registry.register("files", "Explore les fichiers de l'espace de travail", "/files [chemin]")
+@registry.register("files", "Explore les fichiers du système", "/files [chemin]")
 def files_command(args=None):
     from pathlib import Path
 
+    from src.core.paths import resolve_path
+
     if not _active_app:
         return
-    workspace = Path(_active_app.config["security"]["workspace"]).resolve()
-    target = (workspace / " ".join(args or [])).resolve()
-    if target != workspace and workspace not in target.parents:
-        console.print("[error]Le chemin demandé sort de l'espace de travail.[/error]")
-        return
+    raw = " ".join(args or []).strip()
+    target = Path(resolve_path(raw)) if raw else Path(resolve_path("."))
     if not target.is_dir():
         console.print(f"[error]Dossier introuvable : {target}[/error]")
         return

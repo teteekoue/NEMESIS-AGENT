@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional, List
 
-from ..paths import resolve_existing_path
+from ..paths import resolve_existing_path, system_base_dir
 
 
 @dataclass
@@ -29,11 +29,11 @@ DESCRIPTION_FULL = """List files and directories in a tree-like format.
 _MAX_OUTPUT_CHARS = 1_000_000  # 1 Mo - augmente de 10 Ko
 
 
-def list_dir(input: ListDirInput, workspace_dir: str) -> ListDirResult:
+def list_dir(input: ListDirInput, workspace_dir: Optional[str] = None) -> ListDirResult:
     root = (
-        resolve_existing_path(input.path, fallback_base=workspace_dir)
+        resolve_existing_path(input.path)
         if input.path
-        else os.path.abspath(workspace_dir)
+        else str(workspace_dir or system_base_dir())
     )
 
     if not os.path.exists(root):

@@ -197,6 +197,19 @@ export function ToolCallCard({ message }: { message: ChatMessage }) {
             </span>
           )}
           {!arg && <span className="flex-1" />}
+          {typeof message.exitCode === "number" && (
+            <span
+              className={cn(
+                "shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] tabular-nums",
+                message.exitCode === 0
+                  ? "bg-emerald-500/10 text-emerald-500"
+                  : "bg-destructive/10 text-destructive",
+              )}
+              title="Code de sortie"
+            >
+              exit {message.exitCode}
+            </span>
+          )}
           {showTimer && (
             <span
               className={cn(

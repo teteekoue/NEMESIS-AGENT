@@ -135,7 +135,7 @@ export function ChatHeader({
       </TooltipProvider>
 
       <span className="hidden text-[11px] text-muted-foreground sm:inline">
-        {tools.length} outils · {config?.workspace || "workspace"}
+        {tools.length} outils · {config?.workspace || "répertoire courant"}
       </span>
 
       <div className="ml-auto flex items-center gap-1">

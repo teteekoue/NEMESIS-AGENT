@@ -73,8 +73,12 @@ nemapi:
   port: 8090
 
 security:
-  workspace: ./workspace
+  workspace: ""   # répertoire de départ facultatif (vide = répertoire courant)
 ```
+
+NEMESIS n'est pas confiné à ce répertoire : tous les chemins du système sont accessibles,
+les chemins relatifs suivent le répertoire courant persistant du shell, et la boucle d'outils
+n'a aucune limite d'itérations.
 
 ### Sous-agents
 

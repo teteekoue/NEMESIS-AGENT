@@ -4,6 +4,54 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
 
 ---
 
+## [Non publié] — Autonomie totale et chemins libres (25 octobre 2026)
+
+### Plus aucune limite d'itérations
+
+- CLI (`agent.py`), Web (`web/backend/agent_runner.py`), Telegram (`telegram_bot.py`),
+  agents A2A (`src/core/agent_manager.py`) : la boucle d'outils est désormais illimitée.
+  Seules conditions d'arrêt : plus aucun appel d'outil, interruption utilisateur, réponse
+  dupliquée, erreur du provider.
+- Suppression du plafond « 3 appels d'outil par message » (Web, sous-agents, prompt système).
+- Sous-agents : `max_iterations: 0` = illimité (défaut), plafond configurable conservé pour
+  ceux qui le souhaitent.
+
+### Plus de workspace, plus de refus de chemin
+
+- `src/core/paths.py` : `session_cwd()` / `set_session_cwd()` / `resolve_path()` remplacent la
+  résolution confinée ; `resolve_existing_path()` n'redirige plus vers un workspace.
+- `security.workspace` n'est plus qu'un répertoire de départ (vide = répertoire courant) et
+  n'est plus créé automatiquement.
+- `write_file` respecte strictement `file_path` / `path` / `filename`, crée les dossiers
+  parents, renvoie le chemin absolu écrit et refuse explicitement un dossier (fin de
+  l'erreur `Errno 21 — Is a directory`).
+- `edit`, `delete_file` et `read_file` acceptent les mêmes alias ; `delete_file` refuse
+  uniquement la racine du système.
+- Explorateur Web et commande `/files` : navigation sur tout le système, chemins absolus
+  acceptés, plus de `403 Chemin hors du workspace`.
+- Le plan de travail (`todo`) est stocké dans `~/.config/nemesis-cli/.nemesis_todos.json`
+  et ne dépend plus du répertoire courant.
+
+### Shell fiable pour les gros travaux
+
+- `bash` utilise `/bin/bash` quand il existe, accepte les commandes multi-lignes et les
+  heredocs sans échappement supplémentaire.
+- Le répertoire courant est **persistant** : un `cd` reste actif pour les appels suivants
+  (capture silencieuse de `$PWD`, sans polluer la sortie). `workdir`/`cwd` restent disponibles.
+- Timeout : défaut 600 s, minimum 10 s, maximum 7 jours (plus de plafond à 600 s). Alias
+  `timeout_ms` et `background` acceptés.
+- Sortie jamais vide : `[no output captured — exit code: N]`, stderr et signal de
+  timeout/interruption toujours remontés. `format_tool_feedback()` est partagé par CLI,
+  Web et Telegram (le code de sortie n'était jamais affiché auparavant).
+- Le code de sortie est aussi visible dans l'interface : badge `exit N` sur les cartes
+  d'outil (Web) et suffixe `· exit N` sur les cartes CLI.
+
+### Sous-agents
+
+- Sans clé dédiée, `SubagentFleet` réutilise automatiquement le provider principal
+  (`availability()` = `main-provider`) au lieu d'échouer avec « aucune clé API ».
+- Les résultats d'outils complets sont transmis aux workers (plus de plafond à 3 appels).
+
 ## [Non publié] — Interface Web, Mémoire, GitHub, Performance
 
 ### Sous-agents et skills

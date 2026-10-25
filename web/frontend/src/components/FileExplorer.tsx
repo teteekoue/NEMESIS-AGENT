@@ -13,7 +13,8 @@ export function FileExplorer() {
   const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
   const closeFile = useAppStore((s) => s.closeFile);
 
-  const segments = filePath ? filePath.split("/") : [];
+  const absolute = filePath.startsWith("/");
+  const segments = (absolute ? filePath.slice(1) : filePath).split("/").filter(Boolean);
 
   if (openFile) {
     return (
@@ -45,7 +46,7 @@ export function FileExplorer() {
           size="icon-sm"
           disabled={!filePath}
           onClick={() => {
-            const parent = segments.slice(0, -1).join("/");
+            const parent = (absolute ? "/" : "") + segments.slice(0, -1).join("/");
             void refreshFiles(parent);
           }}
           title="Dossier parent"
@@ -53,15 +54,17 @@ export function FileExplorer() {
           <ArrowLeft className="h-3.5 w-3.5" />
         </Button>
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden text-[11px] text-muted-foreground">
-          <button className="shrink-0 hover:text-foreground" onClick={() => void refreshFiles("")}>
-            workspace
+          <button className="shrink-0 hover:text-foreground" onClick={() => void refreshFiles(absolute ? "/" : "")}>
+            {absolute ? "/" : "cwd"}
           </button>
           {segments.map((segment, index) => (
             <React.Fragment key={index}>
               <ChevronRight className="h-3 w-3 shrink-0" />
               <button
                 className="truncate hover:text-foreground"
-                onClick={() => void refreshFiles(segments.slice(0, index + 1).join("/"))}
+                onClick={() =>
+                  void refreshFiles((absolute ? "/" : "") + segments.slice(0, index + 1).join("/"))
+                }
               >
                 {segment}
               </button>
