@@ -135,6 +135,65 @@ def _parse_patch(patch_text: str) -> List[_FilePatch]:
     return sections
 
 
+def _project_roots(start: str) -> List[str]:
+    """Return the project roots found by walking up from ``start``."""
+    roots: List[str] = []
+    current = os.path.abspath(start)
+    for _ in range(12):
+        if os.path.isdir(os.path.join(current, ".git")) or os.path.isfile(
+            os.path.join(current, "pyproject.toml")
+        ):
+            roots.append(current)
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return roots
+
+
+def _resolution_bases(workdir: Optional[str], workspace_dir: Optional[str]) -> List[str]:
+    """Ordered directories a relative patch path is resolved from.
+
+    ``patch`` has no notion of a working directory: it is the tool that must
+    find the file. Before failing, we try the explicit ``workdir``, the
+    persistent shell directory, the project root above the shell directory and
+    finally ``$HOME`` so ``a/src/app.py`` resolves even when the shell sits in
+    another folder than the project.
+    """
+    from .bash import resolve_workdir
+
+    bases: List[str] = []
+
+    def _add(candidate: Optional[str]) -> None:
+        if not candidate:
+            return
+        try:
+            resolved = os.path.realpath(os.path.expanduser(os.path.expandvars(str(candidate))))
+        except OSError:
+            return
+        if os.path.isdir(resolved) and resolved not in bases:
+            bases.append(resolved)
+
+    if workdir not in (None, ""):
+        _add(str(workdir))
+    shell_dir = str(resolve_workdir(None, workspace_dir))
+    _add(shell_dir)
+    # Un shell peut être garé loin du fichier visé (sous-dossier profond) : on
+    # remonte les ancêtres du répertoire courant, du plus proche au plus haut.
+    current = shell_dir
+    for _ in range(6):
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        _add(parent)
+        current = parent
+    for root in _project_roots(shell_dir):
+        _add(root)
+    _add(os.path.expanduser("~"))
+    return bases
+
+
 def _path_candidates(raw: str, workdir: str, must_exist: bool) -> List[str]:
     """Return candidate absolute paths for a path found in the patch."""
     expanded = os.path.expandvars(os.path.expanduser(raw.strip()))
@@ -277,9 +336,16 @@ def apply_patch(
     if not patch_text.endswith("\n"):
         patch_text += "\n"
 
-    base = resolve_workdir(workdir if workdir not in (None, "") else workspace_dir)
-    if not os.path.isdir(base):
-        return ApplyPatchResult(success=False, message=f"Répertoire de travail introuvable: {base}")
+    requested = workdir if workdir not in (None, "") else workspace_dir
+    if requested not in (None, "") and not os.path.isdir(str(resolve_workdir(requested))):
+        return ApplyPatchResult(
+            success=False,
+            message=f"Répertoire de travail introuvable: {requested}",
+        )
+    bases = _resolution_bases(workdir, workspace_dir)
+    if not bases:
+        return ApplyPatchResult(success=False, message="Aucun répertoire de résolution disponible.")
+    base = bases[0]
 
     try:
         sections = _parse_patch(patch_text)
@@ -297,8 +363,18 @@ def apply_patch(
 
         creating = section.old_path == _DEV_NULL
         deleting = section.new_path == _DEV_NULL
-        candidates = _path_candidates(target_raw, base, must_exist=not creating)
-        target = candidates[0]
+
+        target = ""
+        candidates: List[str] = []
+        for candidate_base in bases:
+            candidates = _path_candidates(target_raw, candidate_base, must_exist=not creating)
+            if creating or any(os.path.exists(item) for item in candidates[:1]):
+                target = candidates[0]
+                break
+            target = candidates[0]
+        if not target:
+            failures.append(f"{target_raw}: aucun chemin candidat")
+            continue
         display = target
 
         try:
@@ -306,7 +382,8 @@ def apply_patch(
                 lines, trailing = [], True
             elif not os.path.exists(target):
                 raise _PatchError(
-                    f"{display}: fichier introuvable (répertoire de travail: {base})."
+                    f"{display}: fichier introuvable (répertoires essayés : "
+                    + ", ".join(bases) + ")."
                 )
             elif os.path.isdir(target):
                 raise _PatchError(f"{display}: c'est un répertoire, pas un fichier.")

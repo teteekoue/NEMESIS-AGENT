@@ -55,6 +55,35 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
   (ligne `Delegation`) et dans `GET /api/subagents` (`delegation`) : plus de
   découverte tardive d'une délégation indisponible.
 
+### Troisième passe — racine commune des trois outils
+
+Le rapport v3 ne laissait que trois problèmes. Tous partageaient la même cause :
+la base de résolution de chemin n'était pas la même entre `write_file`, `bash` et
+`apply_patch`.
+
+- **Un résolveur unique** (`src/core/paths.py::resolve_target_path`) traite `file_path`,
+  `path`, `filename`, `file` et `target_file` de façon identique :
+  - premier alias = dossier existant + second alias = nom de fichier → jointure
+    (`path=/projet` + `filename=app.py` → `/projet/app.py`) ;
+  - un fichier existant gagne ; sinon un candidat qui ressemble à un fichier (suffixe) ;
+  - un dossier seul n'est jamais transformé en fichier : erreur explicite ;
+  - un dossier inexistant reste un dossier (fin des fichiers créés à la place du dossier) ;
+  - les chemins relatifs se résolvent depuis le répertoire du shell, jamais depuis le
+    répertoire du processus.
+- **Shell interactif strict** (`tools.py::_looks_interactive`) : le PTY n'est utilisé que si le
+  **programme exécuté** en a besoin (`ssh`, `mysql`, `passwd`, `vim`, `htop`, `git log | less`…).
+  Auparavant une simple sous-chaîne (`node`, `read `) dans un chemin ou un commentaire basculait la
+  commande sur une voie qui repartait du répertoire par défaut, **perdait le `cd`** et renvoyait une
+  sortie vide. Cette voie démarre maintenant dans le répertoire du shell, mémorise le répertoire
+  final et remonte toujours `exit_code`/`stdout`.
+- **`apply_patch` multi-base** : `workdir` explicite → répertoire du shell → ses ancêtres (du plus
+  proche au plus haut) → racine du projet (`.git`/`pyproject.toml`) → `$HOME`. Un shell garé dans
+  `src/deep/nested` applique désormais `--- a/app.py` sur le fichier de la racine, et le message
+  d'erreur liste les répertoires réellement essayés.
+- **`--check` couvre 9 scénarios** (ajout : `path` dossier + `filename`, `cd` après une commande
+  contenant `node`, patch trouvé hors du répertoire courant) : `nemesis --check` doit afficher
+  9 × OK.
+
 ### Diagnostic de mise à jour — `nemesis --check`
 
 - Nouvelle commande `nemesis --check` (alias `--selftest`, module `src/core/selfcheck.py`) :

@@ -23,6 +23,11 @@ def _restore_cwd():
     set_session_cwd(original)
 
 
+def t_path(path):
+    """Retourne le chemin sous forme de chaîne (lisibilité des tests)."""
+    return str(path)
+
+
 def _last(gen):
     result = None
     for update in gen:
@@ -215,3 +220,174 @@ class TestRegistryPatchSchema:
         ok, cleaned, error = registry.validate_call("apply_patch", {"diff": "--- a/x\n+++ b/x\n"})
         assert ok is True, error
         assert cleaned["diff"].startswith("--- a/x")
+
+
+class TestPathAliasResolution:
+    """§1 — `path` doit se comporter exactement comme `file_path`."""
+
+    def test_directory_path_plus_filename_is_joined(self, tmp_path):
+        (tmp_path / "projet").mkdir()
+        bridge = ToolBridge(workspace=str(tmp_path), config={"security": {"workspace": ""}})
+        set_session_cwd(tmp_path)
+        result = None
+        for chunk in bridge.execute_tool(
+            "write_file",
+            {"path": str(tmp_path / "projet"), "filename": "app.py", "content": "x = 1"},
+        ):
+            if "partial" not in chunk:
+                result = chunk
+        assert result["success"] is True, result
+        assert (tmp_path / "projet" / "app.py").read_text() == "x = 1"
+
+    def test_relative_directory_plus_filename(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        bridge = ToolBridge(workspace=str(tmp_path), config={"security": {"workspace": ""}})
+        set_session_cwd(tmp_path)
+        for chunk in bridge.execute_tool(
+            "write_file", {"path": "src", "filename": "main.py", "content": "y"}
+        ):
+            if "partial" not in chunk:
+                assert chunk["success"] is True, chunk
+        assert (tmp_path / "src" / "main.py").read_text() == "y"
+
+    def test_existing_file_wins_over_directory(self, tmp_path):
+        target = tmp_path / "reel.txt"
+        target.write_text("avant")
+        bridge = ToolBridge(workspace=str(tmp_path), config={"security": {"workspace": ""}})
+        set_session_cwd(tmp_path)
+        for chunk in bridge.execute_tool(
+            "write_file",
+            {"path": str(tmp_path), "file_path": str(target), "content": "apres"},
+        ):
+            if "partial" not in chunk:
+                assert chunk["success"] is True, chunk
+        assert target.read_text() == "apres"
+
+    def test_lone_directory_still_reports_an_error(self, tmp_path):
+        (tmp_path / "dossier").mkdir()
+        bridge = ToolBridge(workspace=str(tmp_path), config={"security": {"workspace": ""}})
+        set_session_cwd(tmp_path)
+        for chunk in bridge.execute_tool("write_file", {"path": str(tmp_path / "dossier"), "content": "x"}):
+            if "partial" not in chunk:
+                assert chunk["success"] is False
+                assert "directory" in str(chunk.get("error", "")).lower()
+
+    def test_resolver_prefers_files_then_absolute_paths(self, tmp_path):
+        from src.core.paths import resolve_target_path
+
+        (tmp_path / "d").mkdir()
+        (tmp_path / "f.txt").write_text("x")
+        assert resolve_target_path(str(tmp_path / "d"), str(tmp_path / "f.txt")).endswith("f.txt")
+        assert resolve_target_path(str(tmp_path / "d"), str(tmp_path / "neuf.txt")).endswith("neuf.txt")
+        assert resolve_target_path(str(tmp_path / "d"), "app.py").endswith("d/app.py")
+        assert resolve_target_path(str(tmp_path / "d")).endswith("/d")
+
+
+class TestInteractiveShellPath:
+    """§2 — une commande non interactive ne doit jamais perdre le `cd`."""
+
+    @pytest.mark.parametrize(
+        "command",
+        ["cd {d} && pwd", "cd {d} && pwd # node_modules", "cd {d} && ls | wc -l"],
+    )
+    def test_non_interactive_commands_keep_the_directory(self, tmp_path, command):
+        set_session_cwd(tmp_path)
+        target_dir = tmp_path / "cible"
+        target_dir.mkdir()
+        executor = ActionExecutor(workspace=str(t_path(tmp_path)))
+        _last(executor.execute_tool("bash", {"command": command.format(d=target_dir)}))
+        assert session_cwd() == target_dir.resolve()
+        follow_up = _last(executor.execute_tool("bash", {"command": "pwd"}))
+        assert follow_up["stdout"].strip() == str(target_dir.resolve())
+
+    def test_word_detection_only_matches_the_program(self):
+        from tools import _looks_interactive
+
+        assert _looks_interactive("cd /tmp && pwd # node") is False
+        assert _looks_interactive("cat node_modules/app.js") is False
+        assert _looks_interactive("ls | head") is False
+        assert _looks_interactive("cd /tmp && echo hi > out.txt") is False
+        assert _looks_interactive("ssh serveur") is True
+        assert _looks_interactive("sudo mysql -u root") is True
+        assert _looks_interactive("git log | less") is True
+
+    def test_pty_path_reports_the_exit_code(self, tmp_path):
+        set_session_cwd(tmp_path)
+        executor = ActionExecutor(workspace=str(t_path(tmp_path)))
+        result = _last(
+            executor.execute_tool(
+                "bash", {"command": "ssh -o BatchMode=yes -o ConnectTimeout=1 localhost true"}
+            )
+        )
+        assert result.get("exit_code") is not None
+        assert result["stdout"].strip(), "la sortie ne doit jamais être vide"
+
+
+class TestPatchResolutionBases:
+    """§3 — apply_patch doit trouver le fichier hors du répertoire du shell."""
+
+    def test_project_root_is_found_from_a_nested_shell_directory(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        target = tmp_path / "src" / "app.py"
+        target.parent.mkdir()
+        target.write_text("v1\n")
+        nested = tmp_path / "src" / "deep" / "nested"
+        nested.mkdir(parents=True)
+        set_session_cwd(nested)
+        patch = "--- a/src/app.py\n+++ b/src/app.py\n@@ -1 +1 @@\n-v1\n+v2\n"
+        result = apply_patch(patch)
+        assert result.success is True, result.message
+        assert target.read_text() == "v2\n"
+
+    def test_shell_inside_the_file_directory(self, tmp_path):
+        target = tmp_path / "app.py"
+        target.write_text("a\n")
+        set_session_cwd(tmp_path)
+        result = apply_patch("--- app.py\n+++ app.py\n@@ -1 +1 @@\n-a\n+b\n")
+        assert result.success is True, result.message
+        assert target.read_text() == "b\n"
+
+    def test_missing_file_lists_the_tried_directories(self, tmp_path):
+        set_session_cwd(tmp_path)
+        result = apply_patch("--- a/absent.txt\n+++ b/absent.txt\n@@ -1 +1 @@\n-a\n+b\n")
+        assert result.success is False
+        assert "répertoires essayés" in result.message.lower() or "repertoires essayes" in result.message.lower()
+
+
+class TestPatchAncestorResolution:
+    """§3 (suite) — un shell garé loin du fichier ne doit plus bloquer le patch."""
+
+    def test_ancestors_of_the_shell_directory_are_tried(self, tmp_path):
+        target = tmp_path / "app.py"
+        target.write_text("v1\n")
+        nested = tmp_path / "src" / "deep" / "nested"
+        nested.mkdir(parents=True)
+        set_session_cwd(nested)
+        result = apply_patch("--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-v1\n+v2\n")
+        assert result.success is True, result.message
+        assert target.read_text() == "v2\n"
+
+    def test_closest_directory_wins(self, tmp_path):
+        root_file = tmp_path / "notes.txt"
+        root_file.write_text("racine\n")
+        inner = tmp_path / "sous"
+        inner.mkdir()
+        inner_file = inner / "notes.txt"
+        inner_file.write_text("interne\n")
+        set_session_cwd(inner)
+        result = apply_patch("--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-interne\n+modifie\n")
+        assert result.success is True, result.message
+        assert inner_file.read_text() == "modifie\n"
+        assert root_file.read_text() == "racine\n"
+
+    def test_write_file_creates_a_missing_directory_alias(self, tmp_path):
+        set_session_cwd(tmp_path)
+        bridge = ToolBridge(workspace=str(tmp_path), config={"security": {"workspace": ""}})
+        target = tmp_path / "nouveau" / "sous"
+        for chunk in bridge.execute_tool(
+            "write_file", {"path": str(target), "filename": "f.txt", "content": "z"}
+        ):
+            if "partial" not in chunk:
+                assert chunk["success"] is True, chunk
+        assert (target / "f.txt").read_text() == "z"
+        assert not os.path.exists(str(target) + "/f.txt/f.txt")

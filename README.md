@@ -219,6 +219,7 @@ Détails : [docs/WEB_UI.md](docs/WEB_UI.md).
 | NEMAPI injoignable en local | Onglet Connexion → « Adresse IP et port » (pas d'URL) → **Tester** |
 | `ModuleNotFoundError: yaml` / `rich` | `./venv/bin/pip install -r requirements.txt` |
 | Provider injoignable | Vérifier `config.yaml` / onglet Connexion |
+| `git pull` refuse de s'appliquer (« Your local changes … would be overwritten ») | Un fichier suivi a été modifié localement (souvent `.gitignore`) : `git stash push -m local -- .gitignore` puis `git pull --ff-only origin main`, ou `git checkout -- .gitignore` si la modification n'est pas voulue. |
 | Après un `git pull`, l'agent se comporte comme avant | `python cli.py --check` : affiche OK/ÉCHEC des correctifs **et** le chemin des modules réellement chargés. Si les chemins pointent vers un paquet installé (`site-packages`), `git pull` ne met pas à jour cette copie : `./venv/bin/pip install --force-reinstall .` (ou lancer le CLI depuis le dépôt). Si un serveur Web / bot Telegram tourne, il doit être **redémarré** : Python charge le code au démarrage. |
 
 ---

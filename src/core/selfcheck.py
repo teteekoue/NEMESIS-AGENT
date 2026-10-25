@@ -165,6 +165,63 @@ def _check_apply_patch_workdir(root: str) -> CheckResult:
     return CheckResult("apply_patch avec `workdir`", ok, str(result.get("stdout") or result.get("error"))[:200])
 
 
+def _check_write_directory_plus_filename(root: str) -> CheckResult:
+    directory = os.path.join(root, "projet")
+    os.makedirs(directory, exist_ok=True)
+    result = _last(
+        _bridge().execute_tool(
+            "write_file",
+            {"path": directory, "filename": "alias.txt", "content": "ok\n"},
+        )
+    )
+    target = os.path.join(directory, "alias.txt")
+    ok = bool(result.get("success")) and os.path.isfile(target)
+    return CheckResult(
+        "write_file joint `path` (dossier) et `filename`",
+        ok,
+        str(result.get("stdout") or result.get("error"))[:200],
+    )
+
+
+def _check_cd_survives_keyword_commands(root: str) -> CheckResult:
+    bridge = _bridge()
+    target = os.path.join(root, "cible")
+    os.makedirs(target, exist_ok=True)
+    # « node_modules » dans un commentaire suffisait à basculer sur l'ancien
+    # chemin PTY, qui repartait du répertoire par défaut et perdait le cd.
+    _last(bridge.execute_tool("bash", {"command": f"cd {target} && pwd # node_modules"}))
+    after = _last(bridge.execute_tool("bash", {"command": "pwd"}))
+    ok = os.path.realpath(str(session_cwd())) == os.path.realpath(target) and os.path.realpath(
+        str(after.get("stdout", "")).strip()
+    ) == os.path.realpath(target)
+    return CheckResult(
+        "cd conservé après une commande contenant `node`",
+        ok,
+        str(after.get("stdout") or after.get("error")).strip()[:200],
+    )
+
+
+def _check_patch_from_another_directory(root: str) -> CheckResult:
+    project = os.path.join(root, "depot")
+    os.makedirs(os.path.join(project, ".git"), exist_ok=True)
+    source = os.path.join(project, "src", "app.py")
+    os.makedirs(os.path.dirname(source), exist_ok=True)
+    with open(source, "w", encoding="utf-8") as handle:
+        handle.write("v1\n")
+    nested = os.path.join(project, "src", "deep", "nested")
+    os.makedirs(nested, exist_ok=True)
+    set_session_cwd(nested)
+    patch = "--- a/src/app.py\n+++ b/src/app.py\n@@ -1 +1 @@\n-v1\n+v2\n"
+    result = _last(_bridge().execute_tool("apply_patch", {"patch": patch}))
+    content = open(source, encoding="utf-8").read() if os.path.isfile(source) else ""
+    ok = bool(result.get("success")) and content == "v2\n"
+    return CheckResult(
+        "apply_patch trouve le fichier hors du répertoire courant",
+        ok,
+        str(result.get("stdout") or result.get("error"))[:200],
+    )
+
+
 def _check_exit_code(root: str) -> CheckResult:
     result = _last(_bridge().execute_tool("bash", {"command": "echo souci >&2; exit 3"}))
     ok = result.get("exit_code") == 3 and "souci" in str(result.get("stdout") or result.get("output"))
@@ -186,8 +243,11 @@ def run_selfcheck() -> List[CheckResult]:
         ("write_file accepte `path`", _check_write_file_path),
         ("write_file sans chemin refuse proprement", _check_write_file_without_path),
         ("cd persistant entre deux appels bash", _check_persistent_cd),
+        ("write_file joint `path` (dossier) et `filename`", _check_write_directory_plus_filename),
+        ("cd conservé après une commande contenant `node`", _check_cd_survives_keyword_commands),
         ("apply_patch avec chemin absolu", _check_apply_patch_absolute),
         ("apply_patch avec `workdir`", _check_apply_patch_workdir),
+        ("apply_patch trouve le fichier hors du répertoire courant", _check_patch_from_another_directory),
         ("exit code et stderr remontes", _check_exit_code),
     ]
     results: List[CheckResult] = []

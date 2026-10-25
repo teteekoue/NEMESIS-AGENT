@@ -14,6 +14,44 @@ from tools_schema import get_tool_handler_method, validate_tool_call, get_all_to
 
 mcp_mgr = MCPManager()
 
+# Programmes qui ont réellement besoin d'un terminal. La détection porte sur le
+# programme exécuté (premier mot), jamais sur une sous-chaîne : « node_modules »
+# ou « read » dans un chemin ne doivent pas détourner la commande vers le PTY,
+# car cette voie ne partageait pas le répertoire courant du shell.
+_INTERACTIVE_PROGRAMS = {
+    "ssh", "sftp", "telnet", "ftp", "mysql", "psql", "sqlite3", "mongo", "mongosh",
+    "passwd", "sudoedit", "nano", "vim", "vi", "emacs", "less", "more", "top",
+    "htop", "btop", "tmux", "screen", "ncdu", "mc", "ipython",
+}
+_ENV_ASSIGNMENT = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
+
+
+def _looks_interactive(command: str) -> bool:
+    """True only when the command itself asks for a terminal."""
+    text = str(command or "").strip()
+    if not text:
+        return False
+    # Un pagineur en fin de pipeline demande un terminal.
+    if text.rstrip().endswith(("| less", "| more", "|less", "|more")):
+        return True
+    # Une redirection, un pipe ou un heredoc fournissent l'entrée : pas de PTY.
+    lines = text.splitlines()
+    if len(lines) > 1 or "<<" in text or " | " in text or ">" in text:
+        if not text.rstrip().endswith(("| less", "| more", "|less", "|more")):
+            return False
+    first_line = lines[0].strip()
+    first_line = _ENV_ASSIGNMENT.sub("", first_line)
+    if first_line.startswith("sudo "):
+        first_line = first_line[5:].lstrip()
+        first_line = _ENV_ASSIGNMENT.sub("", first_line)
+    program = first_line.split()[0] if first_line else ""
+    program = os.path.basename(program).lower()
+    if program == "python" and "-i" in first_line.split():
+        return True
+    if program == "node" and len(first_line.split()) == 1:
+        return True
+    return program in _INTERACTIVE_PROGRAMS
+
 class ActionExecutor:
     """Executeur d'outils pour NEMESIS CLI - Format JSON natif."""
     
@@ -50,9 +88,11 @@ class ActionExecutor:
         canonical = {"write": "file_path", "write_file": "file_path", "append": "path", "replace": "path"}
         target = canonical.get(tool_name)
         if target:
-            supplied = [alias for alias in self._PATH_ALIASES if params.get(alias)]
-            if supplied:
-                resolved = str(params[supplied[0]]).strip()
+            from src.core.paths import resolve_target_path
+
+            provided = [params.get(alias) for alias in self._PATH_ALIASES]
+            resolved = resolve_target_path(*provided)
+            if resolved:
                 for alias in self._PATH_ALIASES:
                     params.pop(alias, None)
                 params[target] = resolved
@@ -112,10 +152,8 @@ class ActionExecutor:
             return
         if "sudo" in command and "-S" not in command:
             command = command.replace("sudo ", "sudo -S ")
-        interactive_hints = ("passwd", "ssh ", "mysql", "psql", "python -i", "node", "read ")
-        needs_pty = any(h in command for h in interactive_hints) or command.strip().endswith("| less")
-        if needs_pty and not async_mode:
-            yield from self.execute_bash_live(command, async_mode)
+        if _looks_interactive(command) and not async_mode:
+            yield from self.execute_bash_live(command, async_mode, workdir or cwd)
             return
         try:
             from src.core.agent_tools import _make_bash_input
@@ -523,10 +561,19 @@ class ActionExecutor:
             return {"success": False, "stdout": str(e)}
 
 
-    def execute_bash_live(self, command, async_mode=False):
+    def execute_bash_live(self, command, async_mode=False, workdir=None):
+        """Chemin PTY pour les programmes réellement interactifs.
+
+        Le répertoire de départ est celui du shell persistant (ou ``workdir``),
+        et le répertoire final est mémorisé : une commande lancée par cette voie
+        ne doit ni perdre son ``cd`` ni produire une sortie vide par surprise.
+        """
+        from src.core.tools.bash import _consume_cwd, _wrap_command, resolve_workdir
+
+        live_dir = resolve_workdir(workdir)
         if async_mode:
-            log_path = self.workspace_root / f"proc_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-            proc = subprocess.Popen(f"{command} > '{log_path}' 2>&1", shell=True, executable="/bin/bash", preexec_fn=os.setsid, cwd=self.workspace_root)
+            log_path = Path(live_dir) / f"proc_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            proc = subprocess.Popen(f"{command} > '{log_path}' 2>&1", shell=True, executable="/bin/bash", preexec_fn=os.setsid, cwd=live_dir)
             self.processes[proc.pid] = {"cmd": command, "log": str(log_path), "start": datetime.now().isoformat()}
             yield {"success": True, "stdout": f"PID {proc.pid} lance en arriere-plan.\nLogs: {log_path.name}"}
         else:
@@ -545,8 +592,9 @@ class ActionExecutor:
                 except:
                     pass
                 
-                process = subprocess.Popen(command, shell=True, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, 
-                                        text=False, executable="/bin/bash", cwd=self.workspace_root)
+                wrapped, cwd_file = _wrap_command(command)
+                process = subprocess.Popen(wrapped, shell=True, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+                                        text=False, executable="/bin/bash", cwd=live_dir)
                 os.close(slave_fd)
                 
                 # Configurer le descripteur de fichier maître pour la lecture non-bloquante
@@ -677,13 +725,24 @@ class ActionExecutor:
                     process.wait(timeout=5)
                 except:
                     process.kill()
-                
-                yield {"success": process.returncode == 0, "stdout": "".join(full_output)}
+                _consume_cwd(cwd_file)
+
+                output = "".join(full_output)
+                if not output.strip():
+                    output = f"[no output captured — exit code: {process.returncode}]"
+                yield {
+                    "success": process.returncode == 0,
+                    "stdout": output,
+                    "output": output,
+                    "exit_code": process.returncode,
+                    "returncode": process.returncode,
+                }
                 
             except ImportError:
                 # Fallback au système original si pty n'est pas disponible
                 full_output = []
-                process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.PIPE, text=True, executable="/bin/bash", cwd=self.workspace_root)
+                fallback_wrapped, fallback_cwd_file = _wrap_command(command)
+                process = subprocess.Popen(fallback_wrapped, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.PIPE, text=True, executable="/bin/bash", cwd=live_dir)
                 start = time.time()
                 
                 display_lines = []
@@ -745,7 +804,17 @@ class ActionExecutor:
                 except:
                     pass
                 
-                yield {"success": process.returncode == 0, "stdout": "".join(full_output)}
+                _consume_cwd(fallback_cwd_file)
+                fallback_output = "".join(full_output)
+                if not fallback_output.strip():
+                    fallback_output = f"[no output captured — exit code: {process.returncode}]"
+                yield {
+                    "success": process.returncode == 0,
+                    "stdout": fallback_output,
+                    "output": fallback_output,
+                    "exit_code": process.returncode,
+                    "returncode": process.returncode,
+                }
 
 
     def validate_code(self, file_path):

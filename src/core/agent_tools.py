@@ -6,6 +6,7 @@ import re
 from typing import Optional, Any
 import yaml
 
+from .paths import resolve_target_path
 from .tool_kind import ToolKind, ToolNamespace, ToolDefinition
 from .tool_registry import ToolRegistry
 from .template_renderer import TemplateRenderer
@@ -108,7 +109,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
         kind=ToolKind.READ,
         handler=lambda path=None, paths=None, offset=None, limit=None, file_path=None, filename=None, **kwargs: read_file(
             _ws,
-            path=path or file_path or filename or kwargs.get("file"),
+            path=resolve_target_path(path, file_path, filename, kwargs.get("file")),
             paths=paths,
             offset=offset,
             limit=limit,
@@ -157,7 +158,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
         name="edit",
         kind=ToolKind.EDIT,
         handler=lambda file_path=None, old_string=None, new_string=None, replace_all=False, path=None, filename=None, **kwargs: search_replace(
-            file_path or path or filename or kwargs.get('file', ''),
+            resolve_target_path(file_path, path, filename, kwargs.get('file')),
             old_string,
             new_string,
             _ws,
@@ -210,7 +211,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
         name="write_file",
         kind=ToolKind.WRITE,
         handler=lambda file_path=None, content=None, path=None, filename=None, **kwargs: _write_file(
-            file_path or path or filename or kwargs.get('file', ''),
+            resolve_target_path(file_path, path, filename, kwargs.get('file')),
             content,
             _ws
         ),
@@ -522,7 +523,7 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
         name="delete_file",
         kind=ToolKind.DELETE,
         handler=lambda target_file=None, path=None, file_path=None, **kwargs: _delete_file(
-            target_file or path or file_path or kwargs.get('file', ''),
+            resolve_target_path(target_file, path, file_path, kwargs.get('file')),
             _ws
         ),
         description="Delete a file or directory at the specified path anywhere on the machine. Accepts target_file, path or file_path.",

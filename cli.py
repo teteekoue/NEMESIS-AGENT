@@ -76,7 +76,7 @@ def run_check(console: Optional[Console] = None) -> int:
             console.print(f"      [dim]{result.detail}[/dim]")
     failed = [result for result in results if not result.ok]
     console.print()
-    console.print(module_report())
+    console.print(module_report(), soft_wrap=True)
     console.print()
     if failed:
         console.print(
