@@ -21,25 +21,47 @@ TOOLS_SCHEMA: List[Dict[str, Any]] = [
     {
         "name": 'bash',
         "description": 'Exécute une commande shell (synchrone ou asynchrone)',
-        "parameters": {'mode': "str - 'synchrone' (defaut) ou 'asynchrone'", 'command': 'str - la commande shell a executer', 'timeout': 'int - timeout en SECONDES (min 10, max 600, defaut 120). Optionnel mais recommande; ignore si mode=asynchrone'},
+        "parameters": {
+            'command': 'str - la commande shell a executer',
+            'mode': "str - 'synchrone' (defaut) ou 'asynchrone'",
+            'timeout': 'int - timeout en SECONDES (min 10, max 604800, defaut 600)',
+            'timeout_ms': 'int - alias de timeout, en millisecondes',
+            'workdir': 'str - repertoire d execution (relatif ou absolu). Defaut : repertoire courant persistant',
+            'cwd': 'str - alias de workdir',
+            'background': 'bool - alias de mode=asynchrone',
+        },
         "handler_method": 'execute_bash',
     },
     {
         "name": 'write',
         "description": 'Crée ou écrase un fichier complet',
-        "parameters": {'path': 'str - chemin du fichier', 'content': 'str - contenu complet du fichier'},
+        "parameters": {
+            'path': 'str - chemin du fichier (relatif ou absolu)',
+            'file_path': 'str - alias de path',
+            'filename': 'str - alias de path',
+            'content': 'str - contenu complet du fichier',
+        },
         "handler_method": 'execute_write',
     },
     {
         "name": 'write_file',
         "description": 'Crée ou écrase un fichier complet (nouveau format)',
-        "parameters": {'file_path': 'str - chemin du fichier', 'content': 'str - contenu complet du fichier'},
+        "parameters": {
+            'file_path': 'str - chemin du fichier (relatif ou absolu)',
+            'path': 'str - alias de file_path',
+            'filename': 'str - alias de file_path',
+            'content': 'str - contenu complet du fichier',
+        },
         "handler_method": 'execute_write_file',
     },
     {
         "name": 'append',
         "description": "Ajoute du contenu à la fin d'un fichier",
-        "parameters": {'path': 'str - chemin du fichier', 'content': 'str - contenu a ajouter'},
+        "parameters": {
+            'path': 'str - chemin du fichier',
+            'file_path': 'str - alias de path',
+            'content': 'str - contenu a ajouter',
+        },
         "handler_method": 'execute_append',
     },
     {
@@ -266,8 +288,14 @@ TOOLS_SCHEMA: List[Dict[str, Any]] = [
     },
     {
         "name": 'apply_patch',
-        "description": 'Apply a unified diff patch to the workspace',
-        "parameters": {'patch': 'str - unified diff text', 'dry_run': 'bool - validate only'},
+        "description": 'Apply a unified diff patch (chemins relatifs resolus depuis workdir, chemins absolus acceptes)',
+        "parameters": {
+            'patch': 'str - unified diff text',
+            'diff': 'str - alias de patch',
+            'dry_run': 'bool - validate only',
+            'workdir': 'str - repertoire de resolution des chemins relatifs (defaut : repertoire courant persistant)',
+            'cwd': 'str - alias de workdir',
+        },
         "handler_method": 'execute_apply_patch',
     },
 ]
@@ -312,6 +340,18 @@ def validate_tool_call(tool_name: str, parameters: Dict[str, Any]) -> tuple[bool
         "delegate_task": ["agent", "instruction"],
         "delegate-task": ["agent", "instruction"],
     }
+    path_aliases = ("file_path", "path", "filename", "file", "target_file")
+    needs_path = {
+        "write", "write_file", "append", "replace", "edit", "search_replace",
+        "read", "read_file", "delete_file",
+    }
+    if tool_name in needs_path and not any(parameters.get(alias) for alias in path_aliases):
+        if not isinstance(parameters.get("files"), list) and not isinstance(parameters.get("paths"), list):
+            return (
+                False,
+                f"Parametre manquant: un chemin est requis pour '{tool_name}' "
+                f"(file_path, path ou filename)",
+            )
     for param in required_map.get(tool_name, []):
         if param not in parameters:
             # alternate names

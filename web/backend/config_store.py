@@ -213,9 +213,29 @@ def public_subagents_config() -> Dict[str, Any]:
                 "api_key_from_env": True,
                 "api_key_env_name": env_name,
             })
+    main_provider = str((load_config().get("provider") or {}).get("type") or "").lower()
+    if any(profile["api_key_set"] for profile in profiles):
+        delegation = {
+            "available": True,
+            "mode": "dedicated",
+            "detail": "Profil de sous-agent dedie.",
+        }
+    elif main_provider:
+        delegation = {
+            "available": True,
+            "mode": "main-provider",
+            "detail": "Aucune cle dediee : le provider principal est reutilise.",
+        }
+    else:
+        delegation = {
+            "available": False,
+            "mode": "unavailable",
+            "detail": "Aucun provider utilisable pour la delegation.",
+        }
     return {
         "profiles": profiles,
         "profile_count": len(profiles),
+        "delegation": delegation,
         "max_concurrent": int(config.get("max_concurrent", 4)),
         "max_iterations": int(config.get("max_iterations", 0)),
         "timeout_seconds": int(config.get("timeout_seconds", 180)),

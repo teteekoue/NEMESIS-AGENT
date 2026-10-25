@@ -76,8 +76,35 @@ class ToolBridge:
     def _execute(self, tool_name: str, parameters: Dict[str, Any]):
         try:
             parameters = dict(parameters or {})
+            # Le parseur renvoie {"value": <texte brut>} quand les arguments ne
+            # sont pas un JSON valide (reponse tronquee par le provider, quoting
+            # casse). Le dire clairement au lieu d'un "parametre manquant".
+            if parameters and set(parameters.keys()) <= {"value", "_raw"}:
+                fragment = str(parameters.get("value") or parameters.get("_raw") or "")
+                preview = fragment[:400] + ("..." if len(fragment) > 400 else "")
+                yield {
+                    "success": False,
+                    "stdout": (
+                        f"Arguments invalides pour '{tool_name}': le JSON recu n'a pas pu "
+                        f"etre decode (reponse probablement tronquee). Fragment recu:\n{preview}"
+                    ),
+                    "error": "arguments JSON invalides",
+                }
+                return
             reg = self.registry.get_tool(tool_name)
             if reg is None:
+                # Noms historiques (`write`, `append`, `replace`, `read`,
+                # `validate`, ...) : les traduire vers l'outil moderne
+                # equivalent au lieu de renvoyer "outil inconnu".
+                legacy_name, converter = self.adapt_for_old_executor(tool_name, parameters)
+                if legacy_name != tool_name and self.registry.get_tool(legacy_name) is not None:
+                    try:
+                        converted = converter(parameters) or {}
+                    except Exception:  # noqa: BLE001 - keep the original error
+                        converted = None
+                    if isinstance(converted, dict) and converted:
+                        yield from self._execute(legacy_name, converted)
+                        return
                 yield {"success": False, "stdout": f"Outil inconnu: {tool_name}"}
                 return
 
@@ -211,21 +238,23 @@ class ToolBridge:
                 "description": "",
             }),
             "write": ("write_file", lambda p: {
-                "file_path": p.get("path", ""),
+                "file_path": p.get("file_path") or p.get("path") or p.get("filename") or "",
                 "content": p.get("content", ""),
             }),
             "append": ("write_file", lambda p: {
-                "file_path": p.get("path", ""),
+                "file_path": p.get("file_path") or p.get("path") or p.get("filename") or "",
                 "content": f"__APPEND__:{p.get('content', '')}",
             }),
             "replace": ("edit", lambda p: {
-                "file_path": p.get("path", ""),
+                "file_path": p.get("file_path") or p.get("path") or p.get("filename") or "",
                 "old_string": p.get("blocks", [{}])[0].get("search", "") if p.get("blocks") else "",
                 "new_string": p.get("blocks", [{}])[0].get("replace", "") if p.get("blocks") else "",
                 "replace_all": False,
             }),
             "read": ("read_file", lambda p: {
-                "path": (p.get("files", [""])[0]) if isinstance(p.get("files"), list) else p.get("path", ""),
+                "path": p.get("file_path") or p.get("filename") or (
+                    (p.get("files") or [""])[0] if isinstance(p.get("files"), list) else p.get("path", "")
+                ),
             }),
             "list_dir": ("list_dir", lambda p: {
                 "path": p.get("path", "."),
