@@ -4,6 +4,7 @@ from typing import Optional, List, Union
 
 from ..tool_kind import ToolKind, ToolNamespace
 from ..paths import resolve_existing_path
+from ..image_attachments import image_spec
 
 MAX_NUM_TOKENS = 100_000  # 100k tokens - augmente de 25k
 MAX_LINES_READ = 10_000  # 10k lignes - augmente de 1k
@@ -40,6 +41,7 @@ class ReadFileResult:
     content: Optional[Union[FileContent, MultiFileContent]] = None
     error: Optional[str] = None
     error_type: Optional[str] = None
+    images: List[dict] = field(default_factory=list)
 
 
 DESCRIPTION_FULL = r"""Read one or more files.
@@ -48,7 +50,11 @@ Usage:
 - Multiple files: pass a `paths` list of strings.
 - By default reads up to {max_lines_read} lines per file.
 - Results are returned with line numbers: LINE_NUMBER→LINE_CONTENT.
-- The LINE_NUMBER→ prefix is NOT part of the file content."""
+- The LINE_NUMBER→ prefix is NOT part of the file content.
+- Text files are returned as text. Image files (PNG, JPEG, GIF, WebP, BMP, TIFF)
+  are NOT dumped as binary: they are attached to the conversation as a
+  multimodal image. Analyse the attached image directly; never ask for base64
+  and never read the same image twice. At most 8 images per turn."""
 
 
 def _resolve_path(path_str: str, workspace_dir: str) -> str:
@@ -77,6 +83,18 @@ def _read_single_file(
             success=False,
             error=f"Error: {path_str} is a directory, not a file.",
             error_type="IsADirectory",
+        )
+
+    image = image_spec(resolved)
+    if image:
+        return ReadFileResult(
+            success=True,
+            content=FileContent(
+                content=image["placeholder"],
+                absolute_path=resolved,
+                total_lines=0,
+            ),
+            images=[image],
         )
 
     try:
@@ -201,9 +219,11 @@ def read_file(
     # Multiple files → return MultiFileContent
     file_contents: List[FileContent] = []
     failed_files: List[dict] = []
+    images: List[dict] = []
 
     for p in all_paths:
         result = _read_single_file(p, workspace_dir, offset, limit)
+        images.extend(result.images)
         if result.success and isinstance(result.content, FileContent):
             file_contents.append(result.content)
         else:
@@ -227,4 +247,5 @@ def read_file(
             total_files=len(all_paths),
             failed_files=failed_files,
         ),
+        images=images,
     )

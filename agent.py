@@ -466,6 +466,7 @@ class NemesisApp:
 
         current_input = message
         current_role = "user"
+        pending_images = []
         iteration = 0
         last_response_hash = None
 
@@ -490,18 +491,16 @@ class NemesisApp:
             next(anim)  # start spinner
             prompt_sent_this_turn = bool(system_prefix)
             try:
-                try:
-                    result = self.client.send_message(
-                        current_input, role=current_role, system_prefix=system_prefix
-                    )
-                except TypeError:
-                    if system_prefix and current_role == "user":
-                        result = self.client.send_message(
-                            f"[SYSTEM INSTRUCTIONS]\n{system_prefix}\n\n[USER MESSAGE]\n{current_input}",
-                            role=current_role,
-                        )
-                    else:
-                        result = self.client.send_message(current_input)
+                from src.core.image_attachments import send_message_with_images
+
+                result = send_message_with_images(
+                    self.client,
+                    current_input,
+                    role=current_role,
+                    images=pending_images,
+                    system_prefix=system_prefix,
+                )
+                pending_images = []
                 system_prefix = ""
             finally:
                 try:
@@ -673,6 +672,9 @@ class NemesisApp:
                     if act_type == "todo" and final_res.get("items") is not None:
                         self.composer.display_todo(final_res["items"])
                 batch_feedback.append(self._format_feedback(action, final_res))
+                from src.core.image_attachments import collect_result_images
+
+                pending_images.extend(collect_result_images(final_res))
 
             current_input = "FEEDBACK:\n" + "\n\n".join(batch_feedback)
             current_role = "tool_result"

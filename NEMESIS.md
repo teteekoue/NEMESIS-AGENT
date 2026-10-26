@@ -58,6 +58,11 @@ Les outils `delegate_tasks` et `subagent_status` coordonnent des tâches tempora
 - Les requêtes de sous-agents, contrairement à NEMAPI, incluent l'historique complet OpenAI-compatible à chaque appel.
 - La mémoire persistante est ajoutée au prompt système lorsque l'option est
   activée (partagée par toutes les surfaces).
+- **Multimodal** : les images lues par `read_file` (ou jointes depuis le Web /
+  Telegram) sont envoyées à NemApi en parts OpenAI `image_url` (`data:` URL
+  base64), sur le dernier message `user`. Les fichiers texte continuent d'être
+  transmis en texte. Module : `src/core/image_attachments.py`. Limites NemApi :
+  8 images, ~15 Mo par image, jamais d'URL distante. Voir `README.md` § Images.
 
 ## Configuration
 
@@ -71,10 +76,18 @@ provider:
 nemapi:
   host: 127.0.0.1
   port: 8090
+  # url: https://xxxx.trycloudflare.com/v1   # URL publique (prioritaire sur host/port)
+  # browser_relay: false                     # true si le serveur ne peut pas joindre l'URL
 
 security:
   workspace: ""   # répertoire de départ facultatif (vide = répertoire courant)
 ```
+
+Quand le backend ne peut pas sortir vers l'URL publique (handshake TLS coupé,
+`SSLZeroReturnError`), `browser_relay: true` fait transiter les requêtes NemApi
+par le navigateur via le WebSocket `/ws/relay`. L'option est propre au backend
+Web ; le CLI et Telegram appellent NemApi directement. Voir `README.md` §
+« URL publique et relais navigateur ».
 
 NEMESIS n'est pas confiné à ce répertoire : tous les chemins du système sont accessibles,
 les chemins relatifs suivent le répertoire courant persistant du shell, et la boucle d'outils

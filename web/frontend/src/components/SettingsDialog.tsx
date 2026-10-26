@@ -81,6 +81,7 @@ const DEFAULT_SUBAGENT_MODEL = "qwen/qwen3.8-27b";
 export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const config = useAppStore((s) => s.config);
   const models = useAppStore((s) => s.models);
+  const relayConnected = useAppStore((s) => s.relayConnected);
   const tools = useAppStore((s) => s.tools);
   const saveConfig = useAppStore((s) => s.saveConfig);
   const refreshModels = useAppStore((s) => s.refreshModels);
@@ -107,6 +108,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   const [host, setHost] = React.useState("127.0.0.1");
   const [port, setPort] = React.useState("8090");
   const [url, setUrl] = React.useState("");
+  const [browserRelay, setBrowserRelay] = React.useState(false);
   const [model, setModel] = React.useState("");
   const [workspace, setWorkspace] = React.useState("");
   const [autoApproveReads, setAutoApproveReads] = React.useState(true);
@@ -157,6 +159,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
     setHost(config?.nemapi?.host || "127.0.0.1");
     setPort(String(config?.nemapi?.port ?? 8090));
     setUrl(config?.nemapi?.url || "");
+    setBrowserRelay(Boolean(config?.nemapi?.browser_relay));
     setModel(config?.provider?.model || config?.model || "");
     setWorkspace(config?.security?.workspace || config?.workspace || "");
     setAutoApproveReads(config?.security?.auto_approve_reads ?? true);
@@ -209,10 +212,12 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
       }
       nemapi.url = normalizedUrl;
       nemapi.host = "";
+      nemapi.browser_relay = browserRelay;
     } else {
       nemapi.url = "";
       nemapi.host = host.trim() || "127.0.0.1";
       nemapi.port = Number(port) || 8090;
+      nemapi.browser_relay = false;
     }
     const ok = await saveConfig({
       nemapi,
@@ -679,6 +684,23 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                   autoComplete="off"
                 />
               </Field>
+            )}
+
+            {mode === "url" && (
+              <div className="flex items-start justify-between gap-4 rounded-lg border border-border p-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">Relais navigateur</div>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                    À activer si le serveur NEMESIS ne peut pas joindre l'URL (tunnel cloudflared,
+                    réseau restreint, erreur TLS). Les requêtes passent alors par ce navigateur,
+                    qui peut atteindre le tunnel. Garde cette page ouverte.
+                  </p>
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    État du relais : {relayConnected ? "connecté" : "déconnecté"}.
+                  </p>
+                </div>
+                <Switch checked={browserRelay} onCheckedChange={setBrowserRelay} />
+              </div>
             )}
 
             <div className="flex items-center gap-2">

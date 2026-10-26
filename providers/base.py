@@ -9,6 +9,8 @@ from typing import Dict, Any, List, Optional
 class BaseProvider(ABC):
     """Interface commune pour tous les providers LLM."""
 
+    supports_images = False
+
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.provider_config = config.get("provider", {})
@@ -18,8 +20,16 @@ class BaseProvider(ABC):
         self._conversation: List[Dict[str, str]] = []
 
     @abstractmethod
-    def send_message(self, message: str, role: str = "user") -> Dict[str, Any]:
+    def send_message(
+        self,
+        message: str,
+        role: str = "user",
+        images: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         """Envoie un message au LLM.
+
+        ``images`` (optionnel) contient des parts OpenAI ``image_url`` ; seuls
+        les providers avec ``supports_images = True`` les acceptent.
         Retourne {'success': True, 'response': str} ou {'success': False, 'error': str}.
         """
         ...

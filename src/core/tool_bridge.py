@@ -194,6 +194,8 @@ class ToolBridge:
             err = getattr(result, "error", getattr(result, "stderr", None))
 
             output = {"success": success, "stdout": formatted, "error": err}
+            if getattr(result, "images", None):
+                output["images"] = list(result.images)
             if tool_name == "edit" and hasattr(result, "edits"):
                 output["edits"] = result.edits
             if tool_name == "edit" and hasattr(result, "message"):

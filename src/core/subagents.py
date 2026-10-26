@@ -611,7 +611,17 @@ class SubagentFleet:
                 else:
                     result = self._run_tool(executor, name, parameters)
                 self._record_progress(task_id, name, result)
-                payload = json.dumps(result, ensure_ascii=False, default=str)
+                from src.core.image_attachments import collect_result_images
+
+                model_result = dict(result)
+                if collect_result_images(result):
+                    model_result.pop("images", None)
+                    model_result["image_note"] = (
+                        "Une ou plusieurs images ont été lues. Elles sont transmises au canal "
+                        "multimodal de l'agent principal, pas à ce sous-agent : ne prétends pas "
+                        "les avoir vues et demande à l'agent principal de les analyser."
+                    )
+                payload = json.dumps(model_result, ensure_ascii=False, default=str)
                 if len(payload) > MAX_RESULT_CHARS:
                     payload = payload[:MAX_RESULT_CHARS] + "\n...[truncated]"
                 messages.append({

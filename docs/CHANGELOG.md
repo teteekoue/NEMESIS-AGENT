@@ -4,6 +4,81 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
 
 ---
 
+## [Non publié] — Relais navigateur pour les URL NemApi distantes (26 octobre 2026)
+
+Une URL publique Cloudflared configurée dans l'interface Web échouait avec
+`HTTPSConnectionPool(...): Max retries exceeded with url: /v1/models (Caused by
+SSLError(SSLZeroReturnError(6, 'TLS/SSL connection has been closed (EOF)')))`.
+Le backend hébergé dans un environnement à sortie réseau restreinte ne peut pas
+établir le handshake TLS vers un hôte non autorisé ; le navigateur le peut.
+
+- **Nouveau module `web/backend/browser_relay.py`** : `RelayHub` (requêtes en
+  attente, abonnés WebSocket, distribution sans duplication), `RelaySession`
+  (faux `requests.Session` avec `get`/`post`), `RelayResponse` compatible
+  `raise_for_status()`/`json()`. Messages d'erreur explicites si aucun
+  navigateur n'est connecté ou si le `fetch()` échoue.
+- **Nouveau WebSocket `/ws/relay`** et `GET /api/relay` (diagnostic). Le
+  frontend (`useAppStore.connectRelay`) exécute les `fetch()` NemApi et renvoie
+  statut + corps ; reconnexion automatique après 3 s.
+- **Option `nemapi.browser_relay`** : interrupteur « Relais navigateur » dans
+  Réglages → Connexion, avec état connecté/déconnecté. Interprété seulement par
+  le backend Web (`attach_to_provider`) — le CLI et Telegram gardent leurs
+  requêtes directes. Désactivé automatiquement en mode local.
+- **Normalisation d'URL** : un schéma absent devient `https://`, les `/` finaux
+  sont retirés, le suffixe `/v1` reste accepté. `list_models()` ajoute une
+  consigne « Active Relais navigateur » quand l'erreur ressemble à un blocage
+  TLS/réseau.
+- **Sécurité** : le backend construit l'URL à partir de la configuration ; le
+  navigateur ne choisit pas la cible. Le jeton `Authorization` (si configuré)
+  transite par le navigateur de l'utilisateur qui l'a saisi.
+- Vérifié sans contacter l'URL de l'utilisateur : 8 nouveaux tests unitaires,
+  et un test de bout en temps réel sur un stub local où `/api/models` et
+  `/ws/chat` passent tous deux par le relais (`X-NemApi-Agent: nemesis`).
+
+---
+
+## [Non publié] — Lecture d'images en multimodal NemApi (26 octobre 2026)
+
+NemApi v5.1/v5.2 sait joindre des images à une requête OpenAI (`image_url` en
+`data:` URL base64), en les uploadant via l'interface web du fournisseur —
+notamment `deepseek-chat`. NEMESIS n'exploite plus les méthodes rudimentaires
+(dump binaire avec `errors="replace"`, base64 tapé, upload vers un hébergeur
+public) : les fichiers texte restent du texte, les images deviennent de vraies
+pièces jointes.
+
+- **Nouveau module `src/core/image_attachments.py`** : détection par magic bytes
+  (PNG/JPEG/GIF/WebP/BMP/TIFF), construction des parts OpenAI `image_url`,
+  validation des limites NemApi (data: URL uniquement, ~15 Mo par fichier,
+  8 images par requête), et helper `send_message_with_images()` qui garde les
+  providers non-multimodaux fonctionnels.
+- **`read_file`** (`src/core/tools/read_file.py`) : une image n'est plus lue
+  comme du texte. Le `FEEDBACK` contient `[IMAGE ATTACHED] <chemin> (MIME, taille)`
+  et le résultat porte une liste structurée `images`, propagée par `ToolBridge`.
+  Le mode multi-fichiers fusionne texte et images.
+- **Provider** (`providers/nemapi_v3.py`) : `send_message(..., images=...)` émet
+  `content: [{type: text}, {type: image_url}, ...]` sur le message `user`
+  (rôle `tool_result` inclus). Sans image, le contenu reste une chaîne —
+  protocole historique inchangé. En-tête `X-NemApi-Agent: nemesis` ajouté à
+  chaque requête (option `nemapi.agent`).
+- **Boucles CLI, Web et Telegram** : les images trouvées dans les résultats
+  d'outils sont mises en attente puis jointes à la requête suivante ; un
+  `notice` et un badge « N image(s) · multimodal » les rendent visibles dans le
+  Web. Repli automatique en texte pour les providers sans support.
+- **Interface Web** : trombone dans le composer (8 images, 8 Mo chacune),
+  aperçus et suppression avant envoi, vignettes dans la bulle utilisateur.
+  `POST /ws/chat` accepte `{"type":"user_message","content":...,"images":[...]}`.
+  `ws_max_size` relevé à 64 Mo (surchargeable par `NEMESIS_WS_MAX_SIZE`).
+- **Telegram** : les photos et documents image envoyés au bot sont téléchargés
+  et transmis en multimodal ; un message sans texte mais avec photo est accepté.
+- **Prompt système** : nouvelle section « Images and multimodal reading »
+  expliquant au modèle qu'il voit l'image jointe, sans redemander de base64.
+- **Tests** : 12 nouveaux tests (`tests/test_multimodal.py`) couvrant la
+  détection, les limites, le payload provider, le repli legacy et les deux
+  scénarios de boucle Web. Contrat vérifié aussi contre le vrai
+  `nemapi.utils.tools_format.extract_images` de NemApi.
+
+---
+
 ## [Non publié] — Autonomie totale et chemins libres (25 octobre 2026)
 
 ### Plus aucune limite d'itérations

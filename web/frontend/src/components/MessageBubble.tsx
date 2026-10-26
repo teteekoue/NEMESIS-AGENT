@@ -40,6 +40,18 @@ function MessageBubbleInner({ message }: { message: ChatMessage }) {
       <div className="mx-auto flex w-full max-w-3xl justify-end px-4">
         <div className="flex max-w-[85%] items-start gap-2.5">
           <div className="rounded-2xl rounded-tr-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-sm">
+            {message.images && message.images.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {message.images.map((src, index) => (
+                  <img
+                    key={`${message.id}-img-${index}`}
+                    src={src}
+                    alt={`Pièce jointe ${index + 1}`}
+                    className="h-20 w-20 rounded-lg border border-primary-foreground/20 object-cover"
+                  />
+                ))}
+              </div>
+            )}
             <p className="whitespace-pre-wrap break-words">{message.text}</p>
           </div>
           <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-secondary">

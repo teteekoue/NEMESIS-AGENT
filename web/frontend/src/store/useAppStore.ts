@@ -36,6 +36,8 @@ export interface ChatMessage {
   duration?: number;
   turnElapsed?: number;
   toolCount?: number;
+  images?: string[];
+  imageCount?: number;
 }
 
 export interface AuthRequest {
@@ -55,6 +57,7 @@ export interface ProviderInfo {
 
 interface AppState {
   connected: boolean;
+  relayConnected: boolean;
   backendOffline: boolean;
   demo: boolean;
   agentReachable: boolean | null;
@@ -86,8 +89,9 @@ interface AppState {
   bootstrap: () => Promise<void>;
   retryBootstrap: () => Promise<void>;
   connectSocket: () => void;
+  connectRelay: () => void;
   reconnectAgent: () => void;
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string, images?: string[]) => Promise<void>;
   authorize: (choice: "y" | "n" | "a") => void;
   interrupt: () => void;
   selectModel: (model: string) => Promise<void>;
@@ -129,6 +133,8 @@ interface AppState {
 }
 
 let socket: WebSocket | null = null;
+let relaySocket: WebSocket | null = null;
+let relayRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let manualClose = false;
 let pendingSend: string | null = null;
@@ -157,7 +163,7 @@ const uid = () => `m${Date.now().toString(36)}${(msgSeq++).toString(36)}`;
 const now = () => Date.now() / 1000;
 
 function toStored(message: ChatMessage): StoredMessage {
-  const { id, kind, ...rest } = message;
+  const { id, kind, images, ...rest } = message;
   return { kind, ...rest } as StoredMessage;
 }
 
@@ -165,8 +171,32 @@ function logLine(stamp: string, text: string): string {
   return `[${stamp}] ${text}`;
 }
 
+async function runRelayRequest(payload: any) {
+  const id = String(payload.id || "");
+  const reply = (data: Record<string, unknown>) => {
+    if (relaySocket?.readyState === WebSocket.OPEN) {
+      relaySocket.send(JSON.stringify({ type: "relay_response", id, ...data }));
+    }
+  };
+  try {
+    const response = await fetch(String(payload.url), {
+      method: String(payload.method || "GET"),
+      headers: (payload.headers as Record<string, string>) || {},
+      body: payload.body ?? undefined,
+    });
+    const body = await response.text();
+    reply({ status: response.status, body });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    reply({
+      error: `${detail} — vérifie que l'URL NemApi est joignable depuis ce navigateur et que CORS est autorisé.`,
+    });
+  }
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   connected: false,
+  relayConnected: false,
   backendOffline: false,
   demo: false,
   agentReachable: null,
@@ -213,6 +243,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
     manualClose = false;
+    get().connectRelay();
 
     // Reopen the last active conversation so a page reload (or a backend
     // restart) resumes where the user left off instead of showing nothing.
@@ -314,12 +345,45 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   reconnectAgent: () => {
     set({ agentReachable: null, busy: false, pendingAuth: null, statusText: "" });
+    get().connectRelay();
     reconnect();
   },
 
-  sendMessage: async (text: string) => {
+  connectRelay: () => {
+    if (
+      relaySocket &&
+      (relaySocket.readyState === WebSocket.OPEN || relaySocket.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${window.location.host}/ws/relay`);
+    relaySocket = ws;
+
+    ws.onopen = () => set({ relayConnected: true });
+    ws.onmessage = (event) => {
+      let payload: any;
+      try {
+        payload = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (payload?.type === "relay_request") void runRelayRequest(payload);
+    };
+    ws.onerror = () => set({ relayConnected: false });
+    ws.onclose = () => {
+      set({ relayConnected: false });
+      if (relayRetryTimer !== null) clearTimeout(relayRetryTimer);
+      relayRetryTimer = setTimeout(() => {
+        relayRetryTimer = null;
+        useAppStore.getState().connectRelay();
+      }, 3000);
+    };
+  },
+
+  sendMessage: async (text: string, images: string[] = []) => {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed && images.length === 0) return;
     let sid = get().sessionId;
     if (!sid) {
       try {
@@ -333,20 +397,30 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
 
-    const message: ChatMessage = { id: uid(), kind: "user", text: trimmed, at: now() };
+    const message: ChatMessage = {
+      id: uid(),
+      kind: "user",
+      text: trimmed,
+      at: now(),
+      ...(images.length ? { images } : {}),
+    };
     set((state) => ({ messages: [...state.messages, message], turnStartedAt: now(), lastTurnElapsed: null }));
 
     if (sid) {
       void api.appendMessage(sid, toStored(message)).catch(() => {});
       if (get().messages.filter((m) => m.kind === "user").length === 1) {
         void api
-          .renameSession(sid, trimmed.slice(0, 48))
+          .renameSession(sid, trimmed.slice(0, 48) || "Image")
           .then(() => get().refreshSessions())
           .catch(() => {});
       }
     }
 
-const payload = JSON.stringify({ type: "user_message", content: trimmed });
+const payload = JSON.stringify({
+      type: "user_message",
+      content: trimmed || "Décris et analyse cette image.",
+      ...(images.length ? { images } : {}),
+    });
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(payload);
     } else {
@@ -768,6 +842,7 @@ case "status": {
                 output: payload.output,
                 exitCode: payload.exit_code,
                 duration: payload.duration,
+                imageCount: payload.image_count,
               }
             : m,
         ),
