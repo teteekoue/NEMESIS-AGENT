@@ -72,11 +72,29 @@ provider:
   model: qwen-chat
 
 nemapi:
-  url: http://127.0.0.1:8090/v1
-  token: "" # facultatif ; NEMAPI n'en a généralement pas besoin
+  url: http://127.0.0.1:8090/v1  # ou https://xxxx.trycloudflare.com/v1
+  token: ""            # facultatif ; NEMAPI n'en a généralement pas besoin
+  browser_relay: false # true si le serveur ne peut pas joindre l'URL
 ```
 
 Tout est aussi configurable depuis l'interface Web (onglets Connexion, Général, Mémoire, MCP, Skills, Outils, GitHub, Telegram).
+
+### URL publique et relais navigateur
+
+Quand NEMESIS tourne sur une machine dont la sortie réseau est filtrée (sandbox,
+CI, réseau d'entreprise), le backend ne peut pas ouvrir de connexion vers un
+tunnel `https://xxxx.trycloudflare.com` : le handshake TLS est coupé
+(`SSLZeroReturnError`, `Max retries exceeded with url: /v1/models`). Le
+navigateur de l'utilisateur, lui, peut atteindre ce tunnel.
+
+L'option **Relais navigateur** (onglet Connexion, ou `nemapi.browser_relay: true`)
+route alors les requêtes HTTP NemApi (`/status`, `/v1/models`,
+`/v1/chat/completions`) via le WebSocket `/ws/relay` : le navigateur exécute le
+`fetch()` et renvoie la réponse au backend. NemApi autorisant les origines
+croisées, cela fonctionne sans proxy ni extension supplémentaire. Le relais est
+interprété uniquement par le backend Web ; le CLI et Telegram continuent
+d'appeler NemApi directement. L'interface Web doit rester ouverte pendant les
+échanges. L'état du relais est visible avec `GET /api/relay`.
 
 ### Chemins et autonomie
 
@@ -173,7 +191,9 @@ Registre dynamique partagé par CLI, Web, Telegram et sous-agents.
 
 - **Fichiers** : `read_file`, `write_file`, `edit`, `apply_patch`, `list_dir`, `delete_file`
   (chemins absolus ou relatifs au répertoire courant, sans confinement ; `write_file` accepte
-  `file_path`, `path` ou `filename` ; `apply_patch` accepte `workdir` et les chemins absolus)
+  `file_path`, `path` ou `filename` ; `apply_patch` accepte `workdir` et les chemins absolus).
+  `read_file` envoie le **texte** pour les fichiers texte et joint les **images** au canal
+  multimodal NemApi (voir ci-dessous)
 - **Shell / processus** : `bash` (synchrone/arrière-plan, `cd` persistant, heredocs, `workdir`,
   timeout 10 s–7 jours), `kill_task`, `cleanup_logs`
 - **Recherche** : `glob`, `grep`, `web_search`, `web_fetch`
@@ -185,6 +205,59 @@ Registre dynamique partagé par CLI, Web, Telegram et sous-agents.
 Liste live : `/tools` (CLI) ou onglet **Outils** (Web).
 
 Les sous-agents sont des instances temporaires exécutées en parallèle via une API OpenAI-compatible (Groq par défaut). Configurez leur provider, clé API, modèle et limite de concurrence dans **Réglages → Sous-agents**. Voir [docs/SUBAGENTS.md](docs/SUBAGENTS.md).
+
+---
+
+## Images (multimodal)
+
+NEMESIS n'envoie plus jamais le contenu binaire d'une image dans le prompt (ni
+base64 tapé en texte, ni upload vers un hébergeur public). Quand l'agent doit
+voir une image, il la transmet à NemApi via le format OpenAI `image_url` :
+
+```json
+{
+  "model": "deepseek-chat",
+  "messages": [{
+    "role": "user",
+    "content": [
+      { "type": "text", "text": "FEEDBACK: ... [IMAGE ATTACHED] /tmp/photo.png" },
+      { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0..." } }
+    ]
+  }]
+}
+```
+
+NemApi (v5.1+, étendu à 7 fournisseurs en v5.2) extrait ces parts, les upload
+via l'`<input type=file>` du fournisseur web, puis saisit le texte — sans que le
+base64 ne soit jamais tapé. Fonctionne avec `deepseek-chat`, `qwen-chat`,
+`claude-chat`, `gemini-chat`, `gpt-chat`, `kimi-chat` et `glm-chat` (ChatGLM
+reste le cas connu où l'upload peut échouer côté page web).
+
+**Trois façons de fournir une image :**
+
+| Surface | Méthode |
+| --- | --- |
+| CLI / Telegram | Demander « décris l'image `/chemin/photo.png` » : `read_file` détecte l'image et l'attache au tour suivant |
+| Interface Web | Bouton trombone du composer (jusqu'à 8 images, 8 Mo chacune), ou demander la lecture d'un chemin |
+| Telegram | Envoyer une photo (avec ou sans légende) au bot |
+
+**Détails techniques :**
+
+- Formats reconnus par magic bytes : PNG, JPEG, GIF, WebP, BMP, TIFF. Les autres
+  fichiers restent traités comme du texte.
+- Limites NemApi respectées : URL `data:` base64 uniquement, ~15 Mo par fichier
+  (20 Mo une fois encodé), 8 images par requête, uniquement sur le dernier
+  message `user`.
+- Le marqueur `[IMAGE ATTACHED]` (chemin, MIME, taille) remplace les octets dans
+  le `FEEDBACK` ; l'image est jointe à la requête suivante.
+- L'en-tête `X-NemApi-Agent: nemesis` est envoyé à chaque requête pour que
+  NemApi reconnaisse l'agent (option `nemapi.agent` dans `config.yaml`).
+- Les **sous-agents** (API OpenAI-compatible) ne reçoivent pas les images : le
+  résultat d'outil leur indique explicitement de ne pas prétendre les avoir vues
+  et de laisser l'agent principal faire l'analyse visuelle.
+- Prérequis côté NemApi : extension navigateur connectée et onglet du
+  fournisseur sélectionné. Si l'upload échoue, NemApi répond `500
+  automation_error` : NEMESIS affiche l'erreur au lieu de prétendre avoir vu l'image.
 
 ---
 
@@ -217,6 +290,9 @@ Détails : [docs/WEB_UI.md](docs/WEB_UI.md).
 | `ModuleNotFoundError: uvicorn` / proxy `ECONNREFUSED` en boucle | `./web/start.sh` (installe les deps et attend l'API) |
 | Bandeau « Backend injoignable » | Lancer `python -m web.backend` puis **Réessayer** |
 | NEMAPI injoignable en local | Onglet Connexion → « Adresse IP et port » (pas d'URL) → **Tester** |
+| `SSLZeroReturnError` / `Max retries exceeded … /v1/models` sur une URL cloudflared | Activer **Relais navigateur** dans l'onglet Connexion puis **Tester** ; garder la page ouverte |
+| « Relais navigateur inactif » | Ouvrir l'interface Web (le WebSocket `/ws/relay` doit être connecté) et vérifier `/api/relay` |
+| `Failed to fetch` dans le relais | Vérifier que l'URL NemApi est joignable **depuis le navigateur** et que CORS est autorisé |
 | `ModuleNotFoundError: yaml` / `rich` | `./venv/bin/pip install -r requirements.txt` |
 | Provider injoignable | Vérifier `config.yaml` / onglet Connexion |
 | `git pull` refuse de s'appliquer (« Your local changes … would be overwritten ») | Un fichier suivi a été modifié localement (souvent `.gitignore`) : `git stash push -m local -- .gitignore` puis `git pull --ff-only origin main`, ou `git checkout -- .gitignore` si la modification n'est pas voulue. |

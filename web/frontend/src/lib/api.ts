@@ -22,7 +22,7 @@ export interface ModelsResponse {
 
 export interface PublicConfig {
   provider: { type?: string; model?: string };
-  nemapi: { host?: string; port?: number; url?: string };
+  nemapi: { host?: string; port?: number; url?: string; browser_relay?: boolean };
   mode?: "local" | "url";
   workspace: string;
   model: string;

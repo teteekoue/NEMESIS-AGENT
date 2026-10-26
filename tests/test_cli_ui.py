@@ -210,15 +210,19 @@ def test_nemapi_provider_sends_auth_header_only_when_token_configured():
         "nemapi": {"url": "https://api.example.test/v1", "token": "secret-token"},
     })
     provider._session = FakeSession()
-    assert provider._auth_headers() == {"Authorization": "Bearer secret-token"}
+    assert provider._auth_headers() == {
+        "Authorization": "Bearer secret-token",
+        "X-NemApi-Agent": "nemesis",
+    }
     provider.test_connection()
     provider.list_models()
     provider.send_message("bonjour")
     assert provider._session.get_headers[0]["Authorization"] == "Bearer secret-token"
     assert provider._session.post_headers[0]["Authorization"] == "Bearer secret-token"
+    assert provider._session.post_headers[0]["X-NemApi-Agent"] == "nemesis"
 
     provider.api_token = ""
-    assert provider._auth_headers() == {}
+    assert provider._auth_headers() == {"X-NemApi-Agent": "nemesis"}
 
 
 def test_web_public_config_never_returns_nemapi_token(monkeypatch):

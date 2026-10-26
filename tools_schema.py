@@ -84,7 +84,7 @@ TOOLS_SCHEMA: List[Dict[str, Any]] = [
     },
     {
         "name": 'read',
-        "description": "Lit un ou plusieurs fichiers (max 10). Retourne le contenu avec préfixe LINE_NUMBER→. Pour les fichiers très volumineux ou binaires, retourne un lien d'upload.",
+        "description": "Lit un ou plusieurs fichiers (max 10). Retourne le contenu texte avec préfixe LINE_NUMBER→. Les images (PNG/JPEG/GIF/WebP/BMP/TIFF) sont transmises au modèle en pièce jointe multimodale NemApi, jamais en texte ni en base64.",
         "parameters": {'path': "str - chemin d'un seul fichier (optionnel si paths/files fourni)", 'paths': 'list[str] - liste de chemins (max 10, optionnel)', 'files': 'list[str] - alias de paths (max 10, optionnel)', 'offset': 'int - ligne de départ 1-based (optionnel, appliqué à chaque fichier)', 'limit': 'int - nombre max de lignes par fichier (optionnel)'},
         "handler_method": 'execute_read',
     },

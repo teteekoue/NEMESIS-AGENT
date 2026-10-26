@@ -26,6 +26,8 @@ class NemapiV3Provider(BaseProvider):
     DEFAULT_PORT = 8090
     DEFAULT_MODEL = "qwen-chat"
 
+    supports_images = True
+
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         import requests as req
@@ -78,6 +80,11 @@ class NemapiV3Provider(BaseProvider):
             or self.DEFAULT_MODEL
         )
         self.api_token = str(nv3_cfg.get("token") or "").strip()
+        # NemApi identifie l'agent à CHAQUE requête par cet en-tête. Sans lui,
+        # seules les requêtes portant le prompt système sont reconnues.
+        self.agent_id = str(
+            nv3_cfg.get("agent") or self.provider_config.get("agent") or "nemesis"
+        ).strip()
         
         self._models_cache: List[Dict[str, Any]] = []
         
@@ -195,6 +202,7 @@ class NemapiV3Provider(BaseProvider):
         role: str = "user",
         cancel_event=None,
         system_prefix: str = "",
+        images: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Envoie uniquement le message courant au format OpenAI.
         Le contexte est géré côté API/Bridge, pas ici.
@@ -210,6 +218,11 @@ class NemapiV3Provider(BaseProvider):
 
         ``cancel_event`` (optionnel) permet d'interrompre une requête bloquante
         depuis un autre thread (bouton « Interrompre » de l'UI web).
+
+        ``images`` contient des parts OpenAI ``image_url`` (data: URL base64).
+        NemApi les extrait du dernier message utilisateur et les upload via
+        l'extension navigateur avant de saisir le texte. Sans images, le
+        contenu reste une simple chaîne (protocole historique inchangé).
         """
         prefix = "" if self._prompt_sent else (system_prefix or "").strip()
         if role == "tool_result":
@@ -236,9 +249,12 @@ class NemapiV3Provider(BaseProvider):
             if cancel_event is not None and cancel_event.is_set():
                 return {"success": False, "error": "Requête interrompue par l'utilisateur."}
             try:
+                content: Any = send_content
+                if images and send_role == "user":
+                    content = [{"type": "text", "text": send_content}, *images]
                 payload = {
                     "model": self.model,
-                    "messages": [{"role": send_role, "content": send_content}],
+                    "messages": [{"role": send_role, "content": content}],
                     "stream": False,
                     # ALWAYS false: NemApi's ``fresh_chat`` makes the browser
                     # extension reload the provider page (a brand-new chat URL).
@@ -356,9 +372,12 @@ class NemapiV3Provider(BaseProvider):
         return result.get("resp")
 
     def _auth_headers(self) -> Dict[str, str]:
-        if not self.api_token:
-            return {}
-        return {"Authorization": f"Bearer {self.api_token}"}
+        headers: Dict[str, str] = {}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+        if self.agent_id:
+            headers["X-NemApi-Agent"] = self.agent_id
+        return headers
 
     def _extract_reply(self, data: Any) -> str:
         """Extrait le texte assistant, y compris tool_calls sérialisés."""

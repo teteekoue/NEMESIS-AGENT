@@ -83,6 +83,7 @@ src/core/
   tool_registry.py           Registre des outils
   system_prompt.py           Construction du prompt système
   paths.py                   Résolution des chemins (install vs user config)
+  image_attachments.py       Pièces jointes image → parts OpenAI image_url
   tools/                     Handlers d'outils (read_file, bash, glob, ...)
 providers/
   nemapi_v3.py               Provider NEMAPI (OpenAI-compatible)
@@ -109,6 +110,15 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
 
 ## Décisions d'architecture (importantes)
 
+- **Sortie réseau du backend non fiable** : dans les environnements cloisonnés, seul
+  le navigateur peut joindre un tunnel NemApi (`SSLZeroReturnError` côté serveur).
+  `nemapi.browser_relay` remplace alors `provider._session` par un `RelaySession`
+  qui sérialise les appels sur `/ws/relay`. Le provider reste inchangé : il ne
+  connaît que l'interface `requests.Session` (`get`/`post`, `status_code`, `json`,
+  `raise_for_status`). Ne pas câbler ce mécanisme dans `providers/` (spécifique Web).
+- **URL publique** : `nemapi.url` est normalisée par `config_store` (schéma
+  `https://` implicite, sans `/` final) ; `NemapiV3Provider` retire un suffixe
+  `/v1` puis reconstruit `/v1/...`. Accepter les deux formes côté UI.
 - **Première requête unifiée** : le prompt système (outils + mémoire) est fusionné avec le
   premier message utilisateur → 1 aller-retour provider au démarrage au lieu de 2.
   Implémenté via `send_message(system_prefix=...)` dans `providers/nemapi_v3.py`, appliqué dans
@@ -132,6 +142,16 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
   `max_iterations: 0` (= illimité) et retombent sur le provider principal sans clé dédiée.
 - **Feedback d'outil uniforme** : `src/core/agent_tools.py::format_tool_feedback` expose
   toujours stdout+stderr, le code de sortie et le signal.
+- **Images = multimodal, jamais du texte** : `read_file` détecte les images et renvoie
+  `[IMAGE ATTACHED]` + une liste `images` structurée. Les boucles (CLI/Web/Telegram)
+  collectent ces specs et appellent `send_message_with_images()`, qui produit des parts
+  `image_url` en `data:` URL pour NemApi. Les fichiers texte gardent le chemin texte
+  classique. Limites NemApi à respecter : data: URL uniquement, ~15 Mo par image,
+  8 images par requête, dernier message `user` seulement. Ne jamais mettre de base64
+  dans le prompt ni dans les sessions persistées.
+- **Identification NemApi** : `X-NemApi-Agent: nemesis` sur chaque requête
+  (`nemapi.agent` dans `config.yaml`) ; `fresh_chat: false` reste envoyé pour la
+  rétrocompatibilité mais est ignoré par NemApi ≥ 5.3.
 - **Pas de conversation fictive par défaut** : le mock n'est chargé qu'avec `?demo=1`.
   Backend injoignable → bandeau « Backend injoignable » + bouton Réessayer.
 - **Thème** : clair (blanc-bleu) par défaut, sombre (bleu nuit) ; persisté dans `localStorage("nemesis-theme")`.
@@ -154,6 +174,9 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
 - `/ws/chat` — query `mode`, `session`, `model`. Événements serveur : `ready`, `status`,
   `assistant_text`, `tool_start`, `tool_result`, `tool_denied`, `authorize_request`, `notice`,
   `error`, `turn_end`, `mode_changed`.
+- `/ws/relay` — relais navigateur (`relay_ready` / `relay_request` / `relay_response`).
+  Le frontend `runRelayRequest()` exécute le `fetch()` NemApi. À connecter au
+  bootstrap, pas seulement à l'envoi d'un message : `/api/models` en dépend.
 - `/ws/terminal` — PTY réel, query `cols`/`rows`.
 - Les noms d'événements côté store (`web/frontend/src/store/useAppStore.ts`) **doivent** rester
   alignés avec les émissions serveur (`web/backend/agent_runner.py`, `app.py`).
@@ -161,6 +184,23 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
 ---
 
 ## Historique récent
+
+### Non publié — Relais navigateur (URL NemApi distantes)
+- `web/backend/browser_relay.py` : `RelayHub` + `RelaySession` (faux `requests.Session`).
+- `app.py` : WebSocket `/ws/relay` et `GET /api/relay` ; `attach_to_provider()` dans
+  `AgentRunner` et `list_models()`.
+- `nemapi.browser_relay` : interprété **uniquement** par le backend Web ; ne pas
+  l'activer dans le CLI/Telegram (ils gardent leurs requêtes directes).
+- Ne jamais tester une URL fournie par l'utilisateur depuis le backend : utiliser
+  un stub local. Détails : `README.md` § « URL publique et relais navigateur ».
+
+### Non publié — Lecture d'images en multimodal NemApi
+- `src/core/image_attachments.py` : détection, validation et construction des parts `image_url`.
+- `read_file` : texte → texte, image → pièce jointe structurée (`[IMAGE ATTACHED]`).
+- Provider NEMAPI : `content` en liste de parts + en-tête `X-NemApi-Agent`.
+- CLI/Web/Telegram : collecte des images de la boucle d'outils, trombone dans le Web,
+  photos Telegram, badge « multimodal » sur les cartes d'outil.
+- Détails : `README.md` § « Images (multimodal) » et `docs/CHANGELOG.md`.
 
 ### Non publié — Autonomie totale, chemins libres, gros travaux shell
 - Suppression de toutes les limites d'itérations (CLI, Web, Telegram, A2A, sous-agents).
@@ -228,6 +268,8 @@ règles de rendu des outils, points fragiles, commandes de vérification.
 | `ModuleNotFoundError: uvicorn` / `ECONNREFUSED` en boucle | `./web/start.sh` |
 | Bandeau « Backend injoignable » | Lancer `python -m web.backend` puis Réessayer |
 | NEMAPI injoignable en local | Onglet Connexion → « Adresse IP et port » (pas d'URL) → Tester |
+| `SSLZeroReturnError` / `Max retries exceeded … /v1/models` sur URL cloudflared | Activer **Relais navigateur** (onglet Connexion) et garder la page ouverte ; diagnostic `GET /api/relay` |
+| « Relais navigateur inactif » | Vérifier que le WebSocket `/ws/relay` est connecté |
 | Provider injoignable | Vérifier `config.yaml` / onglet Connexion |
 
 Docs : `docs/WEB_UI.md`, `docs/UI.md`, `docs/MEMORY.md`, `docs/GITHUB.md`, `docs/CHANGELOG.md`,

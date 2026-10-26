@@ -22,6 +22,7 @@ from web.backend import settings as settings_store
 from web.backend import telegram_settings as telegram_store
 from web.backend import github_settings as github_store
 from web.backend.agent_runner import AgentRunner, list_models, list_tools
+from web.backend.browser_relay import HUB as RELAY_HUB
 from web.backend.terminal import PtySession
 from web.backend.config_store import (
     public_config,
@@ -198,6 +199,16 @@ def remove_subagent_profile(profile_id: str) -> Dict[str, Any]:
 @app.get("/api/models")
 def get_models() -> Dict[str, Any]:
     return list_models(load_config())
+
+
+@app.get("/api/relay")
+def relay_status() -> Dict[str, Any]:
+    config = load_config().get("nemapi", {})
+    return {
+        **RELAY_HUB.stats(),
+        "configured": bool(config.get("browser_relay")),
+        "url": str(config.get("url") or ""),
+    }
 
 
 @app.post("/api/models")
@@ -497,8 +508,11 @@ async def ws_chat(websocket: WebSocket) -> None:
             kind = data.get("type")
             if kind == "user_message":
                 content = (data.get("content") or "").strip()
-                if content:
-                    runner.start_turn(content)
+                raw_images = data.get("images") or []
+                images = [img for img in raw_images if isinstance(img, str)] if isinstance(raw_images, list) else []
+                images = images[:8]
+                if content or images:
+                    runner.start_turn(content or "Décris et analyse cette image.", images=images)
             elif kind == "authorize":
                 runner.resolve_authorization(data.get("id", ""), data.get("choice", "n"))
             elif kind == "interrupt":
@@ -538,6 +552,59 @@ async def ws_chat(websocket: WebSocket) -> None:
             if not task.done():
                 task.cancel()
         await asyncio.gather(recv_task, emit_task, return_exceptions=True)
+
+
+# ----------------------------------------------------------------------
+# browser relay (NemApi distant / tunnel depuis un backend sans sortie réseau)
+# ----------------------------------------------------------------------
+@app.websocket("/ws/relay")
+async def ws_relay(websocket: WebSocket) -> None:
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    queue = RELAY_HUB.subscribe(loop)
+    try:
+        await websocket.send_json({"type": "relay_ready"})
+    except Exception:
+        RELAY_HUB.unsubscribe(queue)
+        return
+
+    async def receiver() -> None:
+        while True:
+            try:
+                data = await websocket.receive_json()
+            except WebSocketDisconnect:
+                return
+            except Exception:
+                return
+            kind = data.get("type")
+            if kind == "relay_response":
+                RELAY_HUB.deliver(
+                    str(data.get("id") or ""),
+                    status=data.get("status"),
+                    body=str(data.get("body") or ""),
+                    error=str(data.get("error") or ""),
+                )
+            elif kind == "ping":
+                try:
+                    await websocket.send_json({"type": "pong"})
+                except Exception:
+                    return
+
+    async def sender() -> None:
+        while True:
+            payload = await queue.get()
+            await websocket.send_json(payload)
+
+    recv_task = asyncio.create_task(receiver())
+    send_task = asyncio.create_task(sender())
+    try:
+        await asyncio.wait({recv_task, send_task}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        RELAY_HUB.unsubscribe(queue)
+        for task in (recv_task, send_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(recv_task, send_task, return_exceptions=True)
 
 
 # ----------------------------------------------------------------------

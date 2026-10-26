@@ -1,6 +1,15 @@
 provider:
   type: nemapi
   model: qwen-chat
+nemapi:
+  # Identifiant envoyé dans X-NemApi-Agent à chaque requête (défaut: nemesis).
+  agent: nemesis
+  # URL publique (ex. https://xxxx.trycloudflare.com/v1). Laisse vide pour
+  # utiliser host/port locaux (127.0.0.1:8090 par défaut).
+  # url: https://xxxx.trycloudflare.com/v1
+  # À true uniquement si le serveur NEMESIS ne peut pas joindre cette URL
+  # (sortie réseau bloquée) : les requêtes passent par le navigateur.
+  browser_relay: false
 security:
   # Répertoire de départ (facultatif). Vide = répertoire courant.
   # L'agent n'est plus confiné : il peut agir partout sur le système.

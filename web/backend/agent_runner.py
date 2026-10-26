@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from action_parser import ActionParser
 from providers import create_provider
 from tools import create_executor_from_config
+from web.backend.browser_relay import attach_to_provider, relay_enabled
 
 AUTHORIZE_TIMEOUT = 600  # seconds to wait for a human decision
 
@@ -50,6 +51,7 @@ class AgentRunner:
         self._interrupt = threading.Event()
 
         self.provider = create_provider(config)
+        attach_to_provider(self.provider, config)
         if model:
             self.provider.model = model
         self._session_initialized = False
@@ -136,23 +138,23 @@ class AgentRunner:
         if hasattr(self.executor, "close"):
             self.executor.close()
 
-    def start_turn(self, message: str) -> bool:
+    def start_turn(self, message: str, images: Optional[List[Any]] = None) -> bool:
         if self._busy.is_set():
             self.emit("error", message="Un tour est déjà en cours.")
             return False
         self._busy.set()
         self._interrupt.clear()
-        self.loop.run_in_executor(None, self._run_turn_safe, message)
+        self.loop.run_in_executor(None, self._run_turn_safe, message, images or [])
         return True
 
     # ------------------------------------------------------------------
     # worker thread
     # ------------------------------------------------------------------
-    def _run_turn_safe(self, message: str) -> None:
+    def _run_turn_safe(self, message: str, images: Optional[List[Any]] = None) -> None:
         start = time.time()
         tool_count = 0
         try:
-            tool_count = self._run_turn(message)
+            tool_count = self._run_turn(message, images or [])
         except Exception as exc:  # pragma: no cover - defensive
             self.emit("error", message=f"Erreur inattendue de l'agent: {exc}")
         finally:
@@ -164,7 +166,7 @@ class AgentRunner:
                 at=time.time(),
             )
 
-    def _run_turn(self, message: str) -> int:
+    def _run_turn(self, message: str, images: Optional[List[Any]] = None) -> int:
         if self._conn_ok is None:
             # Probe once, but never let a slow probe delay the first token:
             # if the provider itself is reachable enough to answer, skip.
@@ -193,6 +195,7 @@ class AgentRunner:
 
         current_input = message
         current_role = "user"
+        pending_images: List[Any] = list(images or [])
         iteration = 0
         last_hash: Optional[int] = None
         tool_count = 0
@@ -207,21 +210,22 @@ class AgentRunner:
             self.emit("status", state="thinking", at=time.time())
 
             try:
-                try:
-                    result = self.provider.send_message(
-                        current_input,
-                        role=current_role,
-                        cancel_event=self._interrupt,
-                        system_prefix=system_prefix,
+                from src.core.image_attachments import send_message_with_images
+
+                if pending_images:
+                    self.emit(
+                        "notice",
+                        message=f"{len(pending_images)} image(s) transmise(s) au modèle en multimodal.",
                     )
-                except TypeError:
-                    if system_prefix and current_role == "user":
-                        result = self.provider.send_message(
-                            f"[SYSTEM INSTRUCTIONS]\n{system_prefix}\n\n[USER MESSAGE]\n{current_input}",
-                            role=current_role,
-                        )
-                    else:
-                        result = self.provider.send_message(current_input, role=current_role)
+                result = send_message_with_images(
+                    self.provider,
+                    current_input,
+                    role=current_role,
+                    images=pending_images,
+                    cancel_event=self._interrupt,
+                    system_prefix=system_prefix,
+                )
+                pending_images = []
             except Exception as exc:
                 self.emit("error", message=str(exc))
                 break
@@ -318,6 +322,10 @@ class AgentRunner:
                     or final_res.get("error")
                     or ""
                 )
+                from src.core.image_attachments import collect_result_images
+
+                found_images = collect_result_images(final_res)
+                pending_images.extend(found_images)
                 self.emit(
                     "tool_result",
                     name=act_type,
@@ -326,6 +334,7 @@ class AgentRunner:
                     output=str(output),
                     exit_code=final_res.get("exit_code"),
                     duration=tool_elapsed,
+                    image_count=len(found_images),
                 )
                 batch_feedback.append(self._format_feedback(action, final_res))
 
@@ -428,6 +437,7 @@ def list_models(config: Dict[str, Any]) -> Dict[str, Any]:
     ``/status`` probe used by ``test_connection``.
     """
     provider = create_provider(config)
+    attach_to_provider(provider, config)
     connected = False
     try:
         connected = provider.test_connection()
@@ -440,6 +450,17 @@ def list_models(config: Dict[str, Any]) -> Dict[str, Any]:
         models = provider.list_models() or []
     except Exception as exc:
         error = str(exc)
+        lowered = error.lower()
+        nemapi = config.get("nemapi") or {}
+        blocked = any(word in lowered for word in (
+            "ssl", "tls", "max retries", "connection", "timed out", "name or service not known",
+        ))
+        if not relay_enabled(config) and nemapi.get("url") and blocked:
+            error += (
+                "\n\nLe serveur ne peut pas joindre cette URL (sortie réseau bloquée). "
+                "Active « Relais navigateur » dans Réglages → Connexion : les requêtes "
+                "passeront alors par ton navigateur."
+            )
     if models:
         connected = True
 

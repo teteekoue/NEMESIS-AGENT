@@ -12,6 +12,7 @@ import {
   FolderTree,
   GitBranch,
   Globe,
+  Image as ImageIcon,
   LayoutList,
   ListChecks,
   Loader2,
@@ -208,6 +209,15 @@ export function ToolCallCard({ message }: { message: ChatMessage }) {
               title="Code de sortie"
             >
               exit {message.exitCode}
+            </span>
+          )}
+          {typeof message.imageCount === "number" && message.imageCount > 0 && (
+            <span
+              className="inline-flex shrink-0 items-center gap-1 rounded bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400"
+              title="Image transmise au modèle via le canal multimodal NemApi"
+            >
+              <ImageIcon className="h-3 w-3" />
+              {message.imageCount} image{message.imageCount > 1 ? "s" : ""} · multimodal
             </span>
           )}
           {showTimer && (

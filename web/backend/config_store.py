@@ -49,9 +49,14 @@ def _normalize(raw: Dict[str, Any] | None) -> Dict[str, Any]:
     config["nemapi"].setdefault("host", "127.0.0.1")
     config["nemapi"].setdefault("port", 8090)
     if config["nemapi"].get("url"):
-        config["nemapi"]["url"] = str(config["nemapi"]["url"]).strip().rstrip("/")
+        public_url = str(config["nemapi"]["url"]).strip().rstrip("/")
+        if public_url and not public_url.lower().startswith(("http://", "https://")):
+            public_url = f"https://{public_url}"
+        config["nemapi"]["url"] = public_url
     else:
         config["nemapi"].pop("url", None)
+    if "browser_relay" in config["nemapi"]:
+        config["nemapi"]["browser_relay"] = bool(config["nemapi"]["browser_relay"])
 
     if not isinstance(config.get("security"), dict):
         config["security"] = {"workspace": "", "approval_mode": "all"}
@@ -135,6 +140,8 @@ def update_config(patch: Dict[str, Any]) -> Dict[str, Any]:
             if incoming.get("host") is not None and not host:
                 incoming.pop("host", None)
             current["nemapi"].update(incoming)
+            if not str(current["nemapi"].get("url") or "").strip() and "browser_relay" in current["nemapi"]:
+                current["nemapi"]["browser_relay"] = False
         if isinstance(patch.get("security"), dict):
             current["security"].update(patch["security"])
         return save_config(current)

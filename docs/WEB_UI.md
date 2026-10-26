@@ -178,6 +178,7 @@ Base : `/api`. Toutes les réponses sont en JSON.
 | DELETE | `/api/subagents/profiles/{id}` | Supprime un profil fournisseur |
 | GET  | `/api/models` | Modèles disponibles + état de connexion |
 | POST | `/api/models` | Choix du modèle |
+| GET  | `/api/relay` | État du relais navigateur (abonnés, requêtes en attente, URL) |
 | GET  | `/api/tools` | Catalogue des outils (nom, description, risque) |
 
 ### MCP et skills
@@ -279,6 +280,29 @@ Messages **serveur → client** (extraits) :
 { "type": "turn_end", "elapsed": 2.1, "tool_count": 1 }
 { "type": "mode_changed", "mode": "confirm" }
 ```
+
+### `/ws/relay`
+
+Relais navigateur : utilisé quand `nemapi.browser_relay` est activé et que le
+backend ne peut pas joindre l'URL publique (sortie réseau filtrée). Le serveur
+envoie `relay_ready` puis des `relay_request` :
+
+```json
+{ "type": "relay_request", "id": "a1b2", "method": "POST",
+  "url": "https://xxxx.trycloudflare.com/v1/chat/completions",
+  "headers": { "Content-Type": "application/json", "X-NemApi-Agent": "nemesis" },
+  "body": "{\"model\":\"deepseek-chat\", ...}" }
+```
+
+Le navigateur exécute le `fetch()` puis renvoie :
+
+```json
+{ "type": "relay_response", "id": "a1b2", "status": 200, "body": "{...}" }
+{ "type": "relay_response", "id": "a1b2", "error": "Failed to fetch" }
+```
+
+`GET /api/relay` indique si un navigateur est abonné. Sans abonné, les
+requêtes échouent après ~6 s avec « Relais navigateur inactif ».
 
 ### `/ws/terminal`
 

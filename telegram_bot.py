@@ -570,10 +570,17 @@ class NemesisTelegramBot:
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Gere les messages texte."""
         chat_id = update.effective_chat.id
-        message_text = update.message.text
-        
-        if not message_text:
+        incoming = update.message
+        message_text = incoming.text or incoming.caption or ""
+        document = getattr(incoming, "document", None)
+        has_image = bool(getattr(incoming, "photo", None)) or bool(
+            document and str(getattr(document, "mime_type", "") or "").startswith("image/")
+        )
+
+        if not message_text and not has_image:
             return
+        if not message_text:
+            message_text = "Décris et analyse cette image."
         
         config = self._get_chat_config(chat_id)
         
@@ -696,8 +703,11 @@ class NemesisTelegramBot:
                 await context.bot.send_message(chat_id=chat_id, text=tool_result)
             return
         
-        # Traiter comme une requete pour l'IA
-        await self._process_ai_request(update, context, message_text, chat_id)
+        # Traiter comme une requete pour l'IA (photos → pièces jointes multimodales)
+        attached_images = await self._collect_telegram_images(update, context)
+        if attached_images and not message_text.strip():
+            message_text = "Décris et analyse cette image."
+        await self._process_ai_request(update, context, message_text, chat_id, images=attached_images)
 
 
     # =============================================================================
@@ -948,19 +958,54 @@ class NemesisTelegramBot:
                 error = None
                 content = formatted
             
-            return {
+            result_dict = {
                 "success": success,
                 "content": content,
                 "error": error,
                 "output": content  # Pour compatibilité
             }
+            if isinstance(result, dict) and result.get("images"):
+                result_dict["images"] = result["images"]
+            return result_dict
             
         except Exception as e:
             logger.error(f"Erreur outil {tool_name}: {e}")
             return {"success": False, "error": str(e), "content": "", "output": ""}
 
+    async def _collect_telegram_images(self, update: Update, context) -> List[Dict[str, Any]]:
+        """Photos envoyées au bot → data: URL pour le canal multimodal NemApi."""
+        from src.core.image_attachments import MAX_IMAGE_BYTES, MAX_IMAGES
+        import base64
+
+        incoming = getattr(update, "message", None)
+        if incoming is None:
+            return []
+        candidates = []
+        photo = getattr(incoming, "photo", None)
+        if photo:
+            candidates.append((photo[-1], "image/jpeg", "photo.jpg"))
+        document = getattr(incoming, "document", None)
+        if document and str(getattr(document, "mime_type", "") or "").startswith("image/"):
+            candidates.append((document, document.mime_type, document.file_name or "image"))
+
+        specs: List[Dict[str, Any]] = []
+        for file_obj, mime, name in candidates[:MAX_IMAGES]:
+            try:
+                size = int(getattr(file_obj, "file_size", 0) or 0)
+                if size > MAX_IMAGE_BYTES:
+                    continue
+                payload = await context.bot.get_file(file_obj.file_id).download_as_bytearray()
+                raw = bytes(payload)
+                if len(raw) > MAX_IMAGE_BYTES:
+                    continue
+                url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+                specs.append({"url": url, "name": name[:120]})
+            except Exception as exc:  # noqa: BLE001 - une photo illisible ne bloque pas le message
+                logger.warning(f"Image Telegram ignorée: {exc}")
+        return specs
+
     async def _process_ai_request(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
-                                  message: str, chat_id: int):
+                                  message: str, chat_id: int, images: Optional[List[Any]] = None):
         """Traite une requete pour l'IA - version simplifiée sans autorisations."""
         config = self._get_chat_config(chat_id)
         provider_type = "nemapi"
@@ -992,6 +1037,7 @@ class NemesisTelegramBot:
             # Boucle de traitement avec l'IA (autorisations désactivées)
             current_input = message
             current_role = "user"
+            pending_images: List[Any] = list(images or [])
             iteration = 0
             last_ai_text = ""  # Stocke le dernier message de l'IA
 
@@ -1001,18 +1047,16 @@ class NemesisTelegramBot:
                 iteration += 1
                 
                 # Envoyer à l'IA
-                try:
-                    result = provider.send_message(
-                        current_input, role=current_role, system_prefix=system_prefix
-                    )
-                except TypeError:
-                    if system_prefix and current_role == "user":
-                        result = provider.send_message(
-                            f"[SYSTEM INSTRUCTIONS]\n{system_prefix}\n\n[USER MESSAGE]\n{current_input}",
-                            role=current_role,
-                        )
-                    else:
-                        result = provider.send_message(current_input)
+                from src.core.image_attachments import send_message_with_images
+
+                result = send_message_with_images(
+                    provider,
+                    current_input,
+                    role=current_role,
+                    images=pending_images,
+                    system_prefix=system_prefix,
+                )
+                pending_images = []
                 system_prefix = ""
                 
                 if not result or not isinstance(result, dict):
@@ -1061,6 +1105,9 @@ class NemesisTelegramBot:
                         return
                     tool_result = await self._execute_tool(act_type, act_content, chat_id, context)
                     from src.core.agent_tools import format_tool_feedback
+                    from src.core.image_attachments import collect_result_images
+
+                    pending_images.extend(collect_result_images(tool_result))
                     if isinstance(tool_result, dict):
                         feedback_parts.append(format_tool_feedback(act_type, tool_result))
                     else:
@@ -1467,6 +1514,9 @@ class NemesisTelegramBot:
         self.app.add_handler(CommandHandler("history", self.history_command))
         self.app.add_handler(CommandHandler("about", self.about_command))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        self.app.add_handler(MessageHandler(
+            (filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, self.handle_message
+        ))
         self.app.add_handler(CallbackQueryHandler(self.button_handler))
 
         logger.info("Demarrage du bot Telegram NEMESIS-CLI...")
