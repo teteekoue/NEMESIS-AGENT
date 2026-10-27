@@ -160,11 +160,26 @@ Les appels d’outils sont présentés en cartes avec leurs paramètres, leur r�
 Les conversations CLI utilisent le même stockage durable que l’interface Web : `/sessions new`
 crée un fil, `/sessions open <id>` reprend son transcript et `/sessions delete <id>` l’archive.
 
-La compétence intégrée `cybersecurity-audit` fournit une méthode d’audit défensif et de tests
-réseau autorisés. Elle est désactivée par défaut : dans `/skills`, choisissez l’option 6 puis
-`cybersecurity-audit` pour l’activer pour les nouvelles conversations. Les audits actifs exigent
-un périmètre et une autorisation explicites; les tests destructifs, furtifs ou d’exploitation
-ne sont pas couverts.
+### Skills : versions originales
+
+Les compétences fournies dans `tools_library/` sont les **fichiers originaux**
+récupérés sur GitHub, pas des résumés. Le corps de chaque `SKILL.md` est verbatim ;
+seul le frontmatter ajoute `nemesis_builtin`, `source`, `source_license` et
+`upstream_commit`. Les références et scripts compagnons sont inclus. Voir
+[tools_library/ATTRIBUTION.md](tools_library/ATTRIBUTION.md) pour la table des
+sources et licences (`obra/superpowers` MIT, `anthropics/skills` Apache-2.0, etc.).
+
+`cybersecurity-audit` est un guide AppSec complet : empreinte de la pile, OWASP
+Top 10, classes d’attaques par technologie, preuves, corrections, vérification,
+rapport `SECURITY_AUDIT.md` et verdict. Il explique **comment** auditer ; il ne
+contient ni cadrage obligatoire, ni liste d’actions interdites, ni consignes de
+refus — l’agent reste autonome et les autorisations relèvent de l’utilisateur et
+du mécanisme d’approbation des outils.
+
+Les skills sont désactivés par défaut : `/skills` (option 6) ou Réglages → Skills.
+Les copies marquées `nemesis_builtin: true` dans
+`~/.config/nemesis-cli/tools_library/` sont rafraîchies automatiquement quand la
+version intégrée change ; une copie personnalisée n’est jamais écrasée.
 
 ---
 
@@ -295,6 +310,8 @@ Détails : [docs/WEB_UI.md](docs/WEB_UI.md).
 | `Failed to fetch` dans le relais | Vérifier que l'URL NemApi est joignable **depuis le navigateur** et que CORS est autorisé |
 | `ModuleNotFoundError: yaml` / `rich` | `./venv/bin/pip install -r requirements.txt` |
 | Provider injoignable | Vérifier `config.yaml` / onglet Connexion |
+| Le prompt système est renvoyé après reprise d'une conversation | Corrigé : le frontend transmet `session_id` avec chaque `user_message`, le backend rattache la session (`bind_session`) et `is_initialized()` reconnaît aussi les anciens transcripts contenant une réponse assistant. Le prompt n'est envoyé qu'au tout premier message. |
+| Un skill reste en version réécrite après mise à jour | Vérifier que le frontmatter de la copie dans `~/.config/nemesis-cli/tools_library/` porte toujours `nemesis_builtin: true` : c'est le marqueur qui autorise le rafraîchissement automatique. |
 | `git pull` refuse de s'appliquer (« Your local changes … would be overwritten ») | Un fichier suivi a été modifié localement (souvent `.gitignore`) : `git stash push -m local -- .gitignore` puis `git pull --ff-only origin main`, ou `git checkout -- .gitignore` si la modification n'est pas voulue. |
 | Après un `git pull`, l'agent se comporte comme avant | `python cli.py --check` : affiche OK/ÉCHEC des correctifs **et** le chemin des modules réellement chargés. Si les chemins pointent vers un paquet installé (`site-packages`), `git pull` ne met pas à jour cette copie : `./venv/bin/pip install --force-reinstall .` (ou lancer le CLI depuis le dépôt). Si un serveur Web / bot Telegram tourne, il doit être **redémarré** : Python charge le code au démarrage. |
 

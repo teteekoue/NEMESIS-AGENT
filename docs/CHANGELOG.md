@@ -4,6 +4,55 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
 
 ---
 
+## [Non publié] — Skills originaux et reprise de session sans prompt (26 octobre 2026)
+
+### Skills : retour aux sources
+
+Les sept `tools_library/*/SKILL.md` livrés étaient des réécritures de 19 à 24
+lignes, incomplètes, avec une URL `source:` qui ne correspondait pas au contenu.
+Ils sont remplacés par les **originaux GitHub**, corps verbatim et fichiers
+compagnons inclus :
+
+- `brainstorming`, `systematic-debugging`, `verification-before-completion` et
+  `git-workflow` (alias de `using-git-worktrees`) depuis `obra/superpowers` (MIT) ;
+- `frontend-design` depuis `anthropics/skills` (Apache-2.0, `LICENSE.txt` copié) ;
+- `cybersecurity-audit` depuis le skill public `cybersecurity-audit-expert`
+  (201 lignes : empreinte de pile, OWASP Top 10, preuves, corrections,
+  `SECURITY_AUDIT.md`, verdict). L'ancien texte français imposait un cadrage
+  obligatoire, des niveaux d'activité, des confirmations avant chaque test et
+  des consignes de refus : il bridait un agent autonome. La version restaurée
+  décrit une méthode, pas des interdictions ; l'approbation des outils reste le
+  seul mécanisme d'autorisation.
+- `unit-converter` conservé (original NEMESIS inchangé depuis le premier commit).
+
+Seul le frontmatter est adapté (`name` NEMESIS stable, `nemesis_builtin`,
+`source`, `source_license`, `upstream_commit`, `upstream_name`). Table complète
+dans `tools_library/ATTRIBUTION.md`. Total des corps : ~53 000 caractères, sous
+la limite de 100 000 du prompt. `pyproject.toml` package désormais aussi les
+fichiers compagnons, et `_seed_bundled_skills()` rafraîchit les copies
+utilisateur marquées `nemesis_builtin: true` sans écraser une personnalisation.
+
+### Reprise de session : plus de prompt système renvoyé
+
+Le frontend créait la session **après** l'ouverture du WebSocket : le backend
+n'avait donc aucun `session_id`, n'écrivait jamais `nemapi_initialized` et
+renvoyait le prompt + catalogue d'outils à chaque reprise.
+
+- `useAppStore.sendMessage()` ajoute `session_id` au message `user_message`.
+- `/ws/chat` appelle `AgentRunner.bind_session()` avant de démarrer le tour.
+- `sessions.is_initialized()` retourne vrai pour le drapeau persistant **ou**
+  pour un ancien transcript contenant une réponse `assistant` (sessions créées
+  avant le correctif).
+- `mark_initialized()` ne dépend plus de la présence d'un `system_prefix` : un
+  catalogue vide marque quand même la conversation comme démarrée.
+- Garde supplémentaire au début de chaque tour pour les sessions initialisées
+  par une autre connexion.
+
+Tests : `tests/test_authentic_skills.py` et `tests/test_session_resume.py`
+(24 cas), dont un test WebSocket de bout en bout du rattachement de session.
+
+---
+
 ## [Non publié] — Relais navigateur pour les URL NemApi distantes (26 octobre 2026)
 
 Une URL publique Cloudflared configurée dans l'interface Web échouait avec

@@ -416,9 +416,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
 
-const payload = JSON.stringify({
+    const payload = JSON.stringify({
       type: "user_message",
       content: trimmed || "Décris et analyse cette image.",
+      ...(sid ? { session_id: sid } : {}),
       ...(images.length ? { images } : {}),
     });
     if (socket?.readyState === WebSocket.OPEN) {

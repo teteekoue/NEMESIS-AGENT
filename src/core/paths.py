@@ -84,7 +84,13 @@ def ensure_user_dirs() -> Path:
 
 
 def _seed_bundled_skills(source: Path, destination: Path) -> None:
-    """Copy package-provided skills into existing user libraries without overwriting."""
+    """Keep package-provided builtin skills in sync with the user library.
+
+    A user-customised skill (one whose frontmatter no longer carries
+    ``nemesis_builtin: true``) is never overwritten. Bundled skills that still
+    carry the marker are refreshed when their SKILL.md differs, so restoring an
+    authentic upstream version also replaces older rewritten copies.
+    """
     try:
         for skill_dir in source.iterdir():
             skill_file = skill_dir / "SKILL.md"
@@ -100,6 +106,20 @@ def _seed_bundled_skills(source: Path, destination: Path) -> None:
             target = destination / skill_dir.name
             if not target.exists():
                 shutil.copytree(skill_dir, target)
+                continue
+            installed = target / "SKILL.md"
+            try:
+                installed_content = installed.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            installed_frontmatter = installed_content.split("---", 2)
+            if (
+                len(installed_frontmatter) != 3
+                or "nemesis_builtin: true" not in installed_frontmatter[1]
+                or installed_content == content
+            ):
+                continue
+            shutil.copytree(skill_dir, target, dirs_exist_ok=True)
     except OSError:
         pass
 

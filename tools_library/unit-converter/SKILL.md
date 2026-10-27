@@ -2,6 +2,9 @@
 name: unit-converter
 description: Convert between common units (meters/km, celsius/fahrenheit). Use when the user asks for unit conversion.
 version: 1.0.0
+nemesis_builtin: true
+source: https://github.com/teteekoue/NEMESIS-AGENT/tree/main/tools_library/unit-converter
+source_license: MIT
 ---
 
 # Unit Converter Skill

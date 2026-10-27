@@ -123,6 +123,29 @@ class AgentRunner:
         if waiter is not None:
             waiter.set()
 
+    def bind_session(self, session_id: Optional[str]) -> None:
+        """Attach a session created after the socket was opened.
+
+        The web UI creates its session lazily on the first message, so a fresh
+        ``/ws/chat`` connection can have no ``session`` query parameter. Late
+        binding lets the runner persist ``nemapi_initialized`` and suppress the
+        system prompt when the transcript shows an existing conversation.
+        """
+        sid = str(session_id or "").strip() or None
+        if not sid or self.session_id is not None:
+            return
+        self.session_id = sid
+        initialized = False
+        try:
+            from web.backend import sessions as session_store
+            initialized = session_store.is_initialized(sid)
+        except Exception:
+            initialized = False
+        self._session_initialized = initialized or self._session_initialized
+        self._prompt_sent = self._prompt_sent or initialized
+        if hasattr(self.provider, "configure_session"):
+            self.provider.configure_session(sid, initialized=self._prompt_sent)
+
     def set_model(self, model: str) -> bool:
         self.provider.model = model
         return True
@@ -185,12 +208,24 @@ class AgentRunner:
         # user message so a new session costs a single round-trip instead of two.
         # It is only ever sent once per logical session: resuming an existing
         # conversation never resends the prompt or the tool catalogue.
+        # A session can be initialised by another connection while this runner
+        # is alive (or bound late, see ``bind_session``). Recheck before every
+        # turn so a resumed conversation never receives the prompt again.
+        if not self._prompt_sent and self.session_id:
+            try:
+                from web.backend import sessions as session_store
+                if session_store.is_initialized(self.session_id):
+                    self._prompt_sent = True
+                    self._session_initialized = True
+                    if hasattr(self.provider, "configure_session"):
+                        self.provider.configure_session(self.session_id, initialized=True)
+            except Exception:
+                pass
+
         system_prefix = ""
-        prompt_will_send = False
         if not self._prompt_sent:
             if hasattr(self.executor, "get_system_prompt"):
                 system_prefix = self.executor.get_system_prompt() or ""
-            prompt_will_send = bool(system_prefix)
             self._prompt_sent = True
 
         current_input = message
@@ -241,9 +276,10 @@ class AgentRunner:
 
             # Once the first request of a session succeeds, the NEMAPI
             # conversation now holds the system prompt: persist that fact so a
-            # later resume never resends it nor restarts the chat.
-            if prompt_will_send and not self._session_initialized:
-                prompt_will_send = False
+            # later resume never resends it nor restarts the chat. This must not
+            # depend on ``system_prefix`` being non-empty — an empty catalogue
+            # still means the conversation has started.
+            if not self._session_initialized:
                 self._session_initialized = True
                 if self.session_id:
                     try:

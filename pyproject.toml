@@ -66,30 +66,47 @@ packages = [
 "src.ui" = ["VIBE_UI_LICENSE.txt"]
 
 [tool.setuptools.data-files]
-"." = [
-    "prompt_system.txt",
-    "prompt_system_telegram.txt",
-    "config.yaml",
-    "mcp_config.yaml",
-    "agents.json"
-]
-"tools_library/unit-converter" = [
-    "tools_library/unit-converter/SKILL.md"
+"." = ["prompt_system.txt", "prompt_system_telegram.txt", "config.yaml", "mcp_config.yaml", "agents.json"]
+"tools_library" = [
+    "tools_library/ATTRIBUTION.md"
 ]
 "tools_library/brainstorming" = [
-    "tools_library/brainstorming/SKILL.md"
+    "tools_library/brainstorming/SKILL.md",
+    "tools_library/brainstorming/builder-check-prompt.md",
+    "tools_library/brainstorming/visual-companion.md"
+]
+"tools_library/brainstorming/scripts" = [
+    "tools_library/brainstorming/scripts/frame-template.html",
+    "tools_library/brainstorming/scripts/helper.js",
+    "tools_library/brainstorming/scripts/server.cjs",
+    "tools_library/brainstorming/scripts/start-server.sh",
+    "tools_library/brainstorming/scripts/stop-server.sh"
+]
+"tools_library/cybersecurity-audit" = [
+    "tools_library/cybersecurity-audit/SKILL.md"
 ]
 "tools_library/frontend-design" = [
+    "tools_library/frontend-design/LICENSE.txt",
     "tools_library/frontend-design/SKILL.md"
 ]
 "tools_library/git-workflow" = [
     "tools_library/git-workflow/SKILL.md"
 ]
 "tools_library/systematic-debugging" = [
-    "tools_library/systematic-debugging/SKILL.md"
+    "tools_library/systematic-debugging/CREATION-LOG.md",
+    "tools_library/systematic-debugging/SKILL.md",
+    "tools_library/systematic-debugging/condition-based-waiting-example.ts",
+    "tools_library/systematic-debugging/condition-based-waiting.md",
+    "tools_library/systematic-debugging/defense-in-depth.md",
+    "tools_library/systematic-debugging/find-polluter.sh",
+    "tools_library/systematic-debugging/root-cause-tracing.md",
+    "tools_library/systematic-debugging/test-academic.md",
+    "tools_library/systematic-debugging/test-pressure-1.md",
+    "tools_library/systematic-debugging/test-pressure-2.md",
+    "tools_library/systematic-debugging/test-pressure-3.md"
 ]
-"tools_library/cybersecurity-audit" = [
-    "tools_library/cybersecurity-audit/SKILL.md"
+"tools_library/unit-converter" = [
+    "tools_library/unit-converter/SKILL.md"
 ]
 "tools_library/verification-before-completion" = [
     "tools_library/verification-before-completion/SKILL.md"
