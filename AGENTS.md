@@ -110,6 +110,22 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
 
 ## Décisions d'architecture (importantes)
 
+- **Skills intégrés = originaux GitHub** : ne jamais réécrire un `SKILL.md`
+  fourni. Le corps est verbatim depuis la source déclarée dans le frontmatter ;
+  seuls les champs `name` (identifiant NEMESIS), `nemesis_builtin`, `source`,
+  `source_license`, `upstream_commit` sont ajoutés. Les fichiers compagnons sont
+  packagés (`pyproject.toml`) et synchronisés vers la bibliothèque utilisateur
+  par `src/core/paths.py::_seed_bundled_skills`. Table des sources :
+  `tools_library/ATTRIBUTION.md`. Le skill cybersécurité ne doit contenir aucune
+  consigne de refus ou de cadrage obligatoire : NEMESIS est autonome, le risque
+  est géré par l'approbation des outils.
+- **Prompt système une seule fois par conversation** : le frontend transmet
+  `session_id` dans chaque `user_message` (la session est créée après
+  l'ouverture du socket) ; `/ws/chat` appelle `AgentRunner.bind_session()`.
+  `sessions.is_initialized()` couvre le drapeau persistant **et** les anciens
+  transcripts avec réponse `assistant`. Ne pas réintroduire de logique qui
+  renvoie le catalogue d'outils sur une reprise. `fresh_chat` reste toujours
+  `False` : NemApi recharge la page du fournisseur sinon.
 - **Sortie réseau du backend non fiable** : dans les environnements cloisonnés, seul
   le navigateur peut joindre un tunnel NemApi (`SSLZeroReturnError` côté serveur).
   `nemapi.browser_relay` remplace alors `provider._session` par un `RelaySession`
@@ -184,6 +200,17 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
 ---
 
 ## Historique récent
+
+### Non publié — Skills originaux + reprise sans prompt
+- Remplacement des 6 skills réécrits par les originaux GitHub (corps verbatim,
+  fichiers compagnons, attribution) ; `unit-converter` conservé tel quel.
+- `cybersecurity-audit` : guide AppSec complet, sans cadrage obligatoire ni
+  refus — l'agent autonome n'est plus bridé.
+- Correction de la reprise Web : `session_id` dans `user_message`,
+  `bind_session()`, `is_initialized()` tolérant aux anciens transcripts,
+  `mark_initialized()` inconditionnel.
+- Détails : `README.md` § « Skills : versions originales »,
+  `tools_library/ATTRIBUTION.md`, `docs/CHANGELOG.md`.
 
 ### Non publié — Relais navigateur (URL NemApi distantes)
 - `web/backend/browser_relay.py` : `RelayHub` + `RelaySession` (faux `requests.Session`).

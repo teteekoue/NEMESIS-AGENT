@@ -507,6 +507,7 @@ async def ws_chat(websocket: WebSocket) -> None:
                 return
             kind = data.get("type")
             if kind == "user_message":
+                runner.bind_session(data.get("session_id"))
                 content = (data.get("content") or "").strip()
                 raw_images = data.get("images") or []
                 images = [img for img in raw_images if isinstance(img, str)] if isinstance(raw_images, list) else []

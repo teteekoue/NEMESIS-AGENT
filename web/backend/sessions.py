@@ -137,10 +137,25 @@ def mark_initialized(session_id: str) -> Optional[Dict[str, Any]]:
 
 
 def is_initialized(session_id: str) -> bool:
+    """Whether the system prompt was already delivered for this conversation.
+
+    Older sessions were created before ``nemapi_initialized`` existed and were
+    never flagged (the chat socket did not know their id yet). A transcript
+    containing an assistant reply proves the conversation already started, so
+    resuming it must never resend the prompt or the tool catalogue.
+    """
     if not session_id:
         return False
     session = get_session(session_id)
-    return bool(session and session.get("nemapi_initialized"))
+    if not session:
+        return False
+    if session.get("nemapi_initialized"):
+        return True
+    messages = session.get("messages") or []
+    return any(
+        isinstance(message, dict) and message.get("kind") == "assistant"
+        for message in messages
+    )
 
 
 def delete_session(session_id: str) -> bool:
