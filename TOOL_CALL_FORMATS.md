@@ -2,9 +2,43 @@
 
 ## Overview
 
-NEMESIS CLI accepts **only** the JSON tool-call format. The parser is deliberately strict on the surface (JSON only) and extremely tolerant underneath (aggressive repair of common LLM mistakes).
+NEMESIS CLI, Web and Telegram accept **only** the JSON tool-call format. The main loops
+use `ActionParser(strict=True)`: JSON only, no DSML/XML dialect, and **no silent repair
+of a truncated call**. A permissive legacy parser (`strict=False`) remains available
+for other providers, but harmless JSON mistakes (trailing commas, single quotes) are
+still tolerated in both modes.
 
-No YAML, XML, or natural-language fallbacks are used.
+No YAML, XML, or natural-language fallbacks are used by the main agent. See
+[docs/TOOL_LIMITS.md](docs/TOOL_LIMITS.md) for the runtime limits.
+
+## Hard size limit and long files
+
+NemApi truncates answers between ~5.5 KB and ~6.8 KB. Every single tool call must stay
+under **4000 characters of JSON** (hard ceiling 5000 enforced by `ToolBridge`, for all
+tools). A long file is written as:
+
+```json
+{"tool": "write_file", "parameters": {"path": "long.txt", "content": "first chunk\n"}}
+```
+
+then, in separate messages (wait for FEEDBACK between each):
+
+```json
+{"tool": "append", "parameters": {"path": "long.txt", "content": "next chunk\n"}}
+```
+
+`append` accepts `file_path`, `path` or `filename`, creates the file and its parent
+directories, and reports `bytes_written` / `total_bytes` so the final size can be
+verified. Never use a heredoc inside a `bash` call.
+
+## Forbidden dialects and protocol errors
+
+`<|DSML|>`, `<DSML>`, `<tool_call>`, `<function=...>` and `<parameter=...>` are
+forbidden. A strict parser response with `protocol_error` means **nothing was executed**:
+the loop sends the error back as a correlated `FEEDBACK` block (`[call #N — …]`) and asks
+the model to re-emit valid JSON or split the call. Protocol errors do not impose a
+retry or turn limit: the loop continues until the model completes, the user interrupts,
+or the provider fails.
 
 ## Canonical Format
 

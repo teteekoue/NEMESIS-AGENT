@@ -64,6 +64,16 @@ Les outils `delegate_tasks` et `subagent_status` coordonnent des tâches tempora
   transmis en texte. Module : `src/core/image_attachments.py`. Limites NemApi :
   8 images, ~15 Mo par image, jamais d'URL distante. Voir `README.md` § Images.
 
+## Protocole d'appel d'outils
+
+Les trois surfaces (CLI, Web, Telegram) partagent `src/core/system_prompt.py`,
+`ActionParser(strict=True)` et `ToolBridge`. Un appel = un objet JSON valide dans un bloc
+```json ; le DSML et les dialectes XML sont interdits. Chaque appel reste sous 4 000
+caractères (plafond dur 5 000) et un fichier long s'écrit avec `write_file` puis
+plusieurs `append`. Un JSON tronqué est rejeté explicitement au lieu d'être exécuté
+partiellement. Les blocs `FEEDBACK` portent un marqueur `[call #N — …]` pour détecter
+une réponse décalée. Détails : [docs/TOOL_LIMITS.md](docs/TOOL_LIMITS.md).
+
 ## Configuration
 
 ### config.yaml

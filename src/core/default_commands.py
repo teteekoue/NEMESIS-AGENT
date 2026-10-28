@@ -308,7 +308,8 @@ def tools_command(args=None):
     
     tools_list = [
         ("read_file", "Lecture de fichiers (avec numeros de ligne)"),
-        ("write_file", "Creation ou ecrasement de fichiers"),
+        ("write_file", "Creation ou ecrasement de fichiers (premier bloc)"),
+        ("append", "Ajout d'un bloc a la fin d'un fichier (fichiers longs)"),
         ("edit", "Remplacement exact de texte dans un fichier"),
         ("apply_patch", "Application d'un diff unifie multi-fichiers"),
         ("delete_file", "Suppression d'un fichier"),

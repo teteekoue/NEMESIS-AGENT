@@ -1,6 +1,10 @@
 # NEMESIS Telegram Runtime Prompt
 
 Telegram uses the same generated system prompt and live ToolRegistry as the
-CLI. This file exists only as a compatibility fallback. Use JSON tool calls,
-batch independent read-only work, inspect before edits, stay inside the
-workspace, validate changes, and never claim unverified success.
+CLI and the Web UI. This file exists only as a compatibility fallback.
+
+Use one valid JSON tool call inside a ```json fenced block — never DSML,
+`<tool_call>` or another XML dialect. Keep every call under 4000 characters of
+JSON: write a long file with `write_file` (first chunk) then one `append` per
+chunk, verifying each FEEDBACK. Batch independent read-only work, inspect
+before edits, validate changes, and never claim unverified success.

@@ -115,6 +115,10 @@ Le routage SPA est géré : toute route inconnue (hors `/api` et `/ws`) renvoie 
 ## Fonctionnalités
 
 - **Chat en streaming** avec timings : réflexion, durée de chaque outil, durée du tour.
+- Les appels d'outils sont du **JSON strict** (ni DSML ni XML), limités à 4 000 caractères
+  par appel (5 000 côté runtime). Un long fichier est écrit via `write_file` puis
+  `append`. Chaque `FEEDBACK` est corrélé par un marqueur `[call #N — …]` ; un appel
+  tronqué est refusé sans rien exécuter. Voir [TOOL_LIMITS.md](TOOL_LIMITS.md).
 - **Mode d'autorisation** par session :
   - `Confirmation` : les outils à risque demandent votre accord (`y` / `n` / `a`).
   - `Toutes autorisations` : exécution sans confirmation (agent autonome).

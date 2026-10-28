@@ -4,10 +4,12 @@ This allows a gradual migration: the agent loop can use the new tool system
 while the existing provider layer stays unchanged.
 """
 
+import json
 import os
 from typing import Dict, Any, Generator
 from pathlib import Path
 from src.core.agent_tools import create_registry, build_system_prompt, build_feedback
+from src.core.system_prompt import TOOL_CALL_HARD_LIMIT, OVERSIZED_PROTOCOL_ERROR
 from src.core.tools.bash import run_bash_streamed
 
 
@@ -86,11 +88,30 @@ class ToolBridge:
                     "success": False,
                     "stdout": (
                         f"Arguments invalides pour '{tool_name}': le JSON recu n'a pas pu "
-                        f"etre decode (reponse probablement tronquee). Fragment recu:\n{preview}"
+                        f"etre decode (reponse probablement tronquee). Fragment recu:\n{preview}\n\n"
+                        "Rien n'a ete execute. Renvoie l'appel en JSON valide, ou decoupe le "
+                        "contenu : write_file pour le premier bloc, append pour chaque bloc suivant."
                     ),
                     "error": "arguments JSON invalides",
                 }
                 return
+
+            # Garde-fou dur : NemApi tronque les reponses au-dela de ~5,5-6,8 Ko.
+            # Refuser un appel trop long evite l'ecriture partielle annoncee comme
+            # un succes. Le prompt systeme enseigne deja la marge de 4000 caracteres.
+            if tool_name != "protocol_check":
+                try:
+                    call_size = len(json.dumps(parameters, ensure_ascii=False, default=str))
+                except (TypeError, ValueError):
+                    call_size = len(str(parameters))
+                if call_size > TOOL_CALL_HARD_LIMIT:
+                    yield {
+                        "success": False,
+                        "stdout": f"{OVERSIZED_PROTOCOL_ERROR} (taille recue: {call_size} caracteres)",
+                        "error": "appel d'outil trop long",
+                    }
+                    return
+
             reg = self.registry.get_tool(tool_name)
             if reg is None:
                 # Noms historiques (`write`, `append`, `replace`, `read`,
@@ -202,6 +223,9 @@ class ToolBridge:
                 output["message"] = result.message
             if hasattr(result, "path"):
                 output["path"] = result.path
+            for key in ("bytes_written", "total_bytes"):
+                if hasattr(result, key):
+                    output[key] = getattr(result, key)
 
             yield output
 
@@ -243,9 +267,10 @@ class ToolBridge:
                 "file_path": p.get("file_path") or p.get("path") or p.get("filename") or "",
                 "content": p.get("content", ""),
             }),
-            "append": ("write_file", lambda p: {
+            "append": ("append", lambda p: p),
+            "append_file": ("append", lambda p: {
                 "file_path": p.get("file_path") or p.get("path") or p.get("filename") or "",
-                "content": f"__APPEND__:{p.get('content', '')}",
+                "content": p.get("content", ""),
             }),
             "replace": ("edit", lambda p: {
                 "file_path": p.get("file_path") or p.get("path") or p.get("filename") or "",

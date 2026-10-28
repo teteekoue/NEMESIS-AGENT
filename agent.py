@@ -44,7 +44,7 @@ class NemesisApp:
         self.config = None
         self.client = None
         self.executor = None
-        self.parser = ActionParser()
+        self.parser = ActionParser(strict=True)
         self.debug = debug
         self.auto_allow = False
         self.last_interrupt = 0
@@ -469,6 +469,7 @@ class NemesisApp:
         pending_images = []
         iteration = 0
         last_response_hash = None
+        feedback_seq = 0
 
         # No iteration ceiling: an autonomous agent stops only when the model
         # produces no more tool call, when the user interrupts, or on a
@@ -520,6 +521,24 @@ class NemesisApp:
 
             raw_response = result.get('response', '')
             parsed = self._parse_response(raw_response)
+
+            protocol_error = parsed.get("protocol_error")
+            # Les tool_calls natifs d'un provider OpenAI-compatible restent
+            # prioritaires sur un marqueur XML residuel dans le texte.
+            if protocol_error and not (
+                result.get("tool_calls") or result.get("tool_call")
+            ):
+                from src.core.agent_tools import protocol_error_feedback
+
+                feedback_seq += 1
+                self.console.print(
+                    "[yellow] Appel d'outil invalide ou tronqué : rien n'a été exécuté.[/yellow]"
+                )
+                current_input = protocol_error_feedback(protocol_error, feedback_seq)
+                current_role = "tool_result"
+                last_response_hash = hash(raw_response.strip())
+                continue
+
             native_calls = result.get("tool_calls") or []
             for native_call in native_calls:
                 if isinstance(native_call, dict):
@@ -676,7 +695,10 @@ class NemesisApp:
 
                 pending_images.extend(collect_result_images(final_res))
 
-            current_input = "FEEDBACK:\n" + "\n\n".join(batch_feedback)
+            from src.core.agent_tools import build_feedback_message
+
+            feedback_seq += 1
+            current_input = build_feedback_message(batch_feedback, feedback_seq)
             current_role = "tool_result"
             continue
 
@@ -705,7 +727,7 @@ class NemesisApp:
         # Synchroniser le parseur avec les outils de l'executeur
         if hasattr(self.executor, "registry") and self.executor.registry:
             extra_tools = set(self.executor.registry._tools.keys())
-            self.parser = ActionParser(extra_valid_tools=extra_tools)
+            self.parser = ActionParser(extra_valid_tools=extra_tools, strict=True)
 
         src.core.default_commands.set_active_app(self)
         self._start_session()

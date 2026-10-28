@@ -204,9 +204,10 @@ Exemple de déclenchement d'outil (le modèle émet du JSON, l'utilisateur valid
 
 Registre dynamique partagé par CLI, Web, Telegram et sous-agents.
 
-- **Fichiers** : `read_file`, `write_file`, `edit`, `apply_patch`, `list_dir`, `delete_file`
+- **Fichiers** : `read_file`, `write_file`, `append`, `edit`, `apply_patch`, `list_dir`, `delete_file`
   (chemins absolus ou relatifs au répertoire courant, sans confinement ; `write_file` accepte
-  `file_path`, `path` ou `filename` ; `apply_patch` accepte `workdir` et les chemins absolus).
+  `file_path`, `path` ou `filename` ; `append` ajoute un bloc à la fin du fichier et accepte
+  les mêmes alias ; `apply_patch` accepte `workdir` et les chemins absolus).
   `read_file` envoie le **texte** pour les fichiers texte et joint les **images** au canal
   multimodal NemApi (voir ci-dessous)
 - **Shell / processus** : `bash` (synchrone/arrière-plan, `cd` persistant, heredocs, `workdir`,
@@ -218,6 +219,21 @@ Registre dynamique partagé par CLI, Web, Telegram et sous-agents.
 - **Git / divers** : `git`
 
 Liste live : `/tools` (CLI) ou onglet **Outils** (Web).
+
+### Protocole d'appel et limite de taille
+
+NemApi tronque les longues réponses JSON (entre ~5,5 et ~6,8 Ko). Pour éviter qu'un appel
+tronqué soit exécuté avec un contenu partiel tout en annonçant un succès :
+
+- **un seul objet JSON valide par bloc ```json**, DSML et balises XML interdites ;
+- **4 000 caractères de JSON maximum par appel** (plafond dur 5 000 côté runtime),
+  pour *tous* les outils ; au-delà, l'appel est refusé sans rien exécuter ;
+- un fichier long s'écrit avec `write_file` (premier bloc) puis un `append` par bloc
+  suivant, en attendant le `FEEDBACK` entre chaque appel ;
+- chaque `FEEDBACK` porte un marqueur `[call #N — …]` qui permet de détecter une réponse
+  décalée ; après trois erreurs de protocole consécutives, le tour s'arrête.
+
+Détail des pièges (heredoc, quoting, Android) : [docs/TOOL_LIMITS.md](docs/TOOL_LIMITS.md).
 
 Les sous-agents sont des instances temporaires exécutées en parallèle via une API OpenAI-compatible (Groq par défaut). Configurez leur provider, clé API, modèle et limite de concurrence dans **Réglages → Sous-agents**. Voir [docs/SUBAGENTS.md](docs/SUBAGENTS.md).
 
@@ -325,6 +341,7 @@ Détails : [docs/WEB_UI.md](docs/WEB_UI.md).
 - [docs/CHANGELOG.md](docs/CHANGELOG.md) — Journal des modifications
 - [NEMESIS.md](NEMESIS.md) — Architecture détaillée
 - [TOOL_CALL_FORMATS.md](TOOL_CALL_FORMATS.md) — Formats d'appels d'outils
+- [docs/TOOL_LIMITS.md](docs/TOOL_LIMITS.md) — Limites du runtime, taille des appels, DSML, heredoc
 
 ---
 

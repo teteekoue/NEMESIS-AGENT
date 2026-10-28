@@ -186,9 +186,10 @@ class NemesisTelegramBot:
         self.app: Optional[Application] = None
         self.registry = None
         self.executor = ToolBridge(workspace=self.workspace)
-        self.parser = ActionParser()
+        self.parser = ActionParser(strict=True)
         self.providers: Dict[int, Any] = {}
         self._session_authorized_tools: Dict[int, set] = {}
+        self._feedback_sequences: Dict[int, int] = {}
         
         # Etats de conversation par chat
         self.chat_states: Dict[int, int] = {}
@@ -279,7 +280,7 @@ class NemesisTelegramBot:
             "/config - Afficher la configuration actuelle\n"
             "/history - Gerer l'historique\n\n"
             "*[TOOLS] Outils integrés :*\n"
-            "read_file, write_file, bash, grep, list_dir, web_search, web_fetch\n"
+            "read_file, write_file, append, bash, grep, list_dir, web_search, web_fetch\n"
             "mcp_list, mcp_tools_list, mcp_call, et bien plus!\n\n"
             "*[INFO] Les appels d'outils et les tours internes restent invisibles : "
             "je vous renvoie uniquement la synthese finale.*"
@@ -929,7 +930,7 @@ class NemesisTelegramBot:
                 alt_names = {
                     'read': 'read_file',
                     'write': 'write_file',
-                    'append': 'append_file',
+                    'append_file': 'append',
                     'replace': 'edit',
                 }
                 tool_name = alt_names.get(tool_name, tool_name)
@@ -1040,6 +1041,7 @@ class NemesisTelegramBot:
             pending_images: List[Any] = list(images or [])
             iteration = 0
             last_ai_text = ""  # Stocke le dernier message de l'IA
+            feedback_seq = 0
 
             # No iteration ceiling: the loop ends when the model stops calling
             # tools, when the provider fails, or when the user interrupts.
@@ -1073,7 +1075,16 @@ class NemesisTelegramBot:
                 # Parser la réponse
                 raw_response = result.get('response', '')
                 parsed = self.parser.parse(raw_response)
-                
+
+                protocol_error = parsed.get("protocol_error")
+                if protocol_error:
+                    from src.core.agent_tools import protocol_error_feedback
+
+                    feedback_seq += 1
+                    current_input = protocol_error_feedback(protocol_error, feedback_seq)
+                    current_role = "tool_result"
+                    continue
+
                 # Extraire le texte de l'IA (filtrer les blocs JSON d'appels d'outils)
                 display_text = parsed.get('text', '')
                 action = parsed.get('action')
@@ -1115,7 +1126,10 @@ class NemesisTelegramBot:
                             format_tool_feedback(act_type, {"success": True, "stdout": str(tool_result)})
                         )
 
-                current_input = "FEEDBACK:\n" + "\n\n".join(feedback_parts)
+                from src.core.agent_tools import build_feedback_message
+
+                feedback_seq += 1
+                current_input = build_feedback_message(feedback_parts, feedback_seq)
                 current_role = "tool_result"
             
             # Supprimer le message de statut
@@ -1435,18 +1449,28 @@ class NemesisTelegramBot:
                 act_content = pending['action_content']
                 tool_result = await self._execute_tool(act_type, act_content, chat_id_from_data, context)
                 
-                # Construire le feedback
+                # Construire le feedback avec un marqueur de corrélation
+                from src.core.agent_tools import build_feedback_message, format_tool_feedback
+
+                seq = self._feedback_sequences.get(chat_id_from_data, 0) + 1
+                self._feedback_sequences[chat_id_from_data] = seq
                 if isinstance(tool_result, dict):
                     if tool_result.get('success'):
-                        from src.core.agent_tools import format_tool_feedback
-                        feedback = "FEEDBACK:\n" + format_tool_feedback(act_type, tool_result)
+                        feedback = build_feedback_message(
+                            [format_tool_feedback(act_type, tool_result)], seq
+                        )
                     else:
-                        from src.core.agent_tools import format_tool_feedback
-                        feedback = "FEEDBACK:\n" + format_tool_feedback(
-                            act_type, {"success": False, "error": tool_result.get('error', 'Erreur inconnue')}
+                        feedback = build_feedback_message(
+                            [format_tool_feedback(
+                                act_type,
+                                {"success": False, "error": tool_result.get('error', 'Erreur inconnue')},
+                            )],
+                            seq,
                         )
                 else:
-                    feedback = f"FEEDBACK:\nTool: {act_type}\nSuccess: true\nOutput:\n{str(tool_result)}"
+                    feedback = build_feedback_message(
+                        [f"Tool: {act_type}\nSuccess: true\nOutput:\n{str(tool_result)}"], seq
+                    )
                 
                 # Envoyer le feedback à l'IA et continuer la conversation
                 provider = self._get_provider(chat_id_from_data)

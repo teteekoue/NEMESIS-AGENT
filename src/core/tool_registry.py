@@ -136,6 +136,25 @@ class ToolRegistry:
         properties = schema.get("properties", {})
         required = schema.get("required", [])
 
+        # Quelques modeles utilisent `file`, `target_file` ou `files` alors que le
+        # catalogue documente `path` / `file_path` / `paths`. Normaliser ici evite
+        # un faux "Parametres requis pour 'read_file'" sur un appel pourtant valide.
+        normalized = dict(params)
+        for alias in ("file", "target_file", "target", "name"):
+            if alias not in normalized:
+                continue
+            for canonical in ("file_path", "path", "target_file"):
+                if canonical in properties and canonical not in normalized:
+                    normalized[canonical] = normalized.pop(alias)
+                    break
+        if (
+            "files" in normalized
+            and "paths" in properties
+            and "paths" not in normalized
+        ):
+            normalized["paths"] = normalized.pop("files")
+        params = normalized
+
         cleaned = {}
         for key, value in params.items():
             if key in properties:
