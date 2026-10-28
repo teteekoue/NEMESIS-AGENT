@@ -76,7 +76,7 @@ class AgentRunner:
         registry = getattr(self.executor, "registry", None)
         if registry is not None:
             valid_tools = set(registry._tools.keys())
-        self.parser = ActionParser(extra_valid_tools=valid_tools or None)
+        self.parser = ActionParser(extra_valid_tools=valid_tools or None, strict=True)
 
         self._authorized: set = set()
         self._auth_waiters: Dict[str, threading.Event] = {}
@@ -234,6 +234,8 @@ class AgentRunner:
         iteration = 0
         last_hash: Optional[int] = None
         tool_count = 0
+        feedback_seq = 0
+        protocol_errors = 0
 
         # No iteration ceiling: the turn ends when the model stops calling
         # tools, when the user interrupts, or when the provider fails.
@@ -290,6 +292,31 @@ class AgentRunner:
 
             raw = result.get("response", "") or ""
             parsed = self.parser.parse(raw)
+
+            protocol_error = parsed.get("protocol_error")
+            # Un provider qui renvoie de vrais tool_calls natifs garde la
+            # priorite, meme si son texte contient un marqueur XML residuel.
+            if protocol_error and not (
+                result.get("tool_calls") or result.get("tool_call")
+            ):
+                from src.core.agent_tools import protocol_error_feedback
+
+                protocol_errors += 1
+                feedback_seq += 1
+                self.emit(
+                    "notice",
+                    message=f"Appel d'outil invalide ou tronqué ({protocol_errors}) : rien n'a été exécuté.",
+                )
+                current_input = protocol_error_feedback(protocol_error, feedback_seq)
+                current_role = "tool_result"
+                last_hash = hash(raw.strip())
+                if protocol_errors >= 3:
+                    self.emit(
+                        "error",
+                        message="Trop d'appels d'outils invalides consécutifs. Tour interrompu.",
+                    )
+                    break
+                continue
 
             for native_call in result.get("tool_calls") or []:
                 if isinstance(native_call, dict):
@@ -378,7 +405,11 @@ class AgentRunner:
                 self.emit("notice", message="Tour interrompu par l'utilisateur.")
                 break
 
-            current_input = "FEEDBACK:\n" + "\n\n".join(batch_feedback)
+            from src.core.agent_tools import build_feedback_message
+
+            protocol_errors = 0
+            feedback_seq += 1
+            current_input = build_feedback_message(batch_feedback, feedback_seq)
             current_role = "tool_result"
             continue
 

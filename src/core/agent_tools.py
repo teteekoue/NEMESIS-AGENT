@@ -10,7 +10,12 @@ from .paths import resolve_target_path
 from .tool_kind import ToolKind, ToolNamespace, ToolDefinition
 from .tool_registry import ToolRegistry
 from .template_renderer import TemplateRenderer
-from .system_prompt import SYSTEM_PROMPT_TEMPLATE
+from .system_prompt import (
+    SYSTEM_PROMPT_TEMPLATE,
+    render_system_prompt,
+    TOOL_CALL_CHAR_BUDGET,
+    TOOL_CALL_HARD_LIMIT,
+)
 
 from .tools.read_file import read_file, DESCRIPTION_FULL as READ_DESC
 from .tools.search_replace import search_replace, DESCRIPTION_FULL as EDIT_DESC
@@ -219,7 +224,9 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
             "Write content to a file (creates parent directories and overwrites). "
             "The path is honored exactly: relative paths resolve from the current shell "
             "directory and any absolute path anywhere on the machine is accepted. "
-            "Accepts file_path, path or filename."
+            "Accepts file_path, path or filename. For long files write the first chunk "
+            "here then use 'append' for each following chunk; keep every call under "
+            f"{TOOL_CALL_CHAR_BUDGET} characters of JSON. Reports bytes_written and total_bytes."
         ),
         params_schema={
             "type": "object",
@@ -238,7 +245,52 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
                 },
                 "content": {
                     "type": "string",
-                    "description": "Full content to write to the file.",
+                    "description": "Content to write (the first chunk for a long file).",
+                },
+            },
+            "required": ["content"],
+            "anyOf": [
+                {"required": ["file_path"]},
+                {"required": ["path"]},
+                {"required": ["filename"]},
+            ],
+        },
+    )
+
+    registry.register(
+        name="append",
+        kind=ToolKind.WRITE,
+        handler=lambda file_path=None, content=None, path=None, filename=None, **kwargs: _append_file(
+            resolve_target_path(file_path, path, filename, kwargs.get('file')),
+            content,
+            _ws
+        ),
+        description=(
+            "Append a chunk of content to the END of an existing file (creates the "
+            "file and parent directories if missing). Use it after 'write_file' to "
+            "build a long file in several small calls: one chunk per call, same path, "
+            f"each call under {TOOL_CALL_CHAR_BUDGET} characters of JSON. Never resend "
+            "the whole file. Accepts file_path, path or filename. Reports bytes_written "
+            "and total_bytes — verify the total size when finished."
+        ),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Path of the file to append to (same path as write_file).",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Path of the file to append to (alias).",
+                },
+                "filename": {
+                    "type": "string",
+                    "description": "Path of the file to append to (alias).",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "ONLY the next chunk of content to append.",
                 },
             },
             "required": ["content"],
@@ -823,10 +875,7 @@ def build_system_prompt(registry: ToolRegistry) -> str:
         "parentheses; a trailing `?` means the parameter is optional.\n\n"
         + catalog
     )
-    if "{{TOOLS_CATALOG}}" in prompt:
-        prompt = prompt.replace("{{TOOLS_CATALOG}}", catalog_block)
-    else:
-        prompt += "\n\n## Available Tools\n\n" + catalog_block
+    prompt = render_system_prompt(prompt, catalog_block)
 
     try:
         memory_message = build_memory_message()
@@ -1001,8 +1050,8 @@ def format_tool_feedback(tool_name: str, result: Any, max_chars: int = 10_000_00
     return "\n".join(lines)
 
 
-def _write_file(file_path: str, content: str, workspace_dir: Optional[str] = None) -> object:
-    """Write content to the exact path requested, anywhere on the system."""
+def _write_file_impl(file_path: str, content: str, append: bool) -> object:
+    """Write (or append) at the exact path requested, then verify the bytes."""
     from dataclasses import dataclass
 
     @dataclass
@@ -1011,6 +1060,8 @@ def _write_file(file_path: str, content: str, workspace_dir: Optional[str] = Non
         message: str
         error: Optional[str] = None
         path: Optional[str] = None
+        bytes_written: int = 0
+        total_bytes: int = 0
 
     from .paths import resolve_path
 
@@ -1025,9 +1076,7 @@ def _write_file(file_path: str, content: str, workspace_dir: Optional[str] = Non
         return WriteResult(success=False, message="", error="The 'content' parameter is required.")
 
     text = content if isinstance(content, str) else str(content)
-    append = text.startswith(_APPEND_PREFIX)
-    if append:
-        text = text[len(_APPEND_PREFIX):]
+    payload = text.encode("utf-8")
 
     resolved = resolve_path(raw)
     if os.path.isdir(resolved):
@@ -1039,9 +1088,18 @@ def _write_file(file_path: str, content: str, workspace_dir: Optional[str] = Non
         )
 
     try:
+        before = os.path.getsize(resolved) if (append and os.path.isfile(resolved)) else 0
         os.makedirs(os.path.dirname(resolved) or ".", exist_ok=True)
-        with open(resolved, "a" if append else "w", encoding="utf-8") as handle:
-            handle.write(text)
+        with open(resolved, "ab" if append else "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            try:
+                os.fsync(handle.fileno())
+            except OSError:
+                # Certains systèmes de fichiers (sdcard Android, FS réseau)
+                # refusent fsync ; la vérification de taille ci-dessous suffit.
+                pass
+        after = os.path.getsize(resolved) if os.path.isfile(resolved) else -1
     except OSError as e:
         return WriteResult(
             success=False,
@@ -1050,8 +1108,68 @@ def _write_file(file_path: str, content: str, workspace_dir: Optional[str] = Non
             path=resolved,
         )
 
+    expected = (before + len(payload)) if append else len(payload)
+    if after != expected:
+        return WriteResult(
+            success=False,
+            message="",
+            error=(
+                f"Write verification failed for {resolved}: expected {expected} bytes, "
+                f"found {after}. The content may be incomplete; rewrite it in small chunks."
+            ),
+            path=resolved,
+            bytes_written=len(payload),
+            total_bytes=after,
+        )
+
     action = "Content appended to" if append else "File written"
-    return WriteResult(success=True, message=f"{action}: {resolved}", path=resolved)
+    message = (
+        f"{action}: {resolved} "
+        f"(bytes_written: {len(payload)}, total_bytes: {after})"
+    )
+    return WriteResult(
+        success=True,
+        message=message,
+        path=resolved,
+        bytes_written=len(payload),
+        total_bytes=after,
+    )
+
+
+def _write_file(file_path: str, content: str, workspace_dir: Optional[str] = None) -> object:
+    """Write content to the exact path requested, anywhere on the system."""
+    text = content if isinstance(content, str) else str(content)
+    append = isinstance(content, str) and text.startswith(_APPEND_PREFIX)
+    if append:
+        text = text[len(_APPEND_PREFIX):]
+    return _write_file_impl(file_path, text, append)
+
+
+def _append_file(file_path: str, content: str, workspace_dir: Optional[str] = None) -> object:
+    """Append a chunk to a file; the standard way to build a long file."""
+    return _write_file_impl(file_path, content, True)
+
+
+def build_feedback_message(feedback_parts: list, sequence: int) -> str:
+    """Wrap tool feedback with a correlation marker shared by every surface."""
+    parts = []
+    for part in feedback_parts:
+        text = str(part).strip()
+        # CLI et Web prefixent deja chaque bloc avec "FEEDBACK:".
+        if text.startswith("FEEDBACK:"):
+            text = text[len("FEEDBACK:"):].lstrip()
+        if text:
+            parts.append(text)
+    header = f"FEEDBACK:\n[call #{sequence} — {len(parts)} tool(s)]"
+    return header + ("\n\n" + "\n\n".join(parts) if parts else "")
+
+
+def protocol_error_feedback(message: str, sequence: int) -> str:
+    """Feedback sent when the model emitted an invalid/truncated tool call."""
+    return (
+        f"FEEDBACK:\n[call #{sequence} — protocol error]\n\n"
+        f"Tool: protocol_check\nSuccess: false\nOutput:\n{message}"
+    )
 
 
 def _delete_file(target_file: str, workspace_dir: Optional[str] = None) -> object:

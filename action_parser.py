@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Ultra-robust JSON-only tool call parser for NEMESIS CLI.
+JSON tool call parser for NEMESIS CLI / Web / Telegram.
 
-JSON is the preferred format, but the parser also accepts common XML-like
-tool-call dialects emitted by local and hosted models. It is designed to extract and
-repair tool calls from LLM responses even when they contain:
-  - Large multi-line content (code, file bodies, etc.)
-  - Unescaped newlines, tabs, backslashes, quotes inside string values
-  - Trailing commas, single quotes, unquoted keys
-  - Truncated JSON
-  - Surrounding prose or markdown fences
+JSON is the required format in strict mode (enabled by the main CLI, Web and
+Telegram loops). The permissive legacy path still accepts common XML-like tool-call
+dialects emitted by local models, and repairs harmless JSON mistakes
+(trailing commas, single quotes, unescaped newlines).
+
+Strict mode NEVER executes a truncated call: NemApi cuts long answers in the
+middle of the JSON, which used to produce a partial write announced as a
+success. Instead it returns ``protocol_error`` so the loop can tell the model
+to split the call into write_file + append chunks.
 
 Supported call shapes (all equivalent after normalisation):
   {"tool": "name", "parameters": {...}}
@@ -26,6 +27,16 @@ import json
 import re
 import ast
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+from src.core.system_prompt import DSML_PROTOCOL_ERROR, TRUNCATED_PROTOCOL_ERROR
+
+_DSML_MARKER = re.compile(
+    r"<\|\s*DSML\s*\|>|</?DSML\b|\bDSML\s*\|", re.I
+)
+_XML_TOOL_MARKER = re.compile(
+    r"</?(?:tool_call|function|parameter)\b|<function\s*=", re.I
+)
+_TOOL_KEY_MARKER = re.compile(r'"(?:tool|name|action|type)"\s*:', re.I)
 
 
 class ActionParser:
@@ -59,6 +70,7 @@ class ActionParser:
         "read",
         "replace",
         "append",
+        "append_file",
         "validate",
         "status",
         "kill_process",
@@ -84,18 +96,149 @@ class ActionParser:
         "web-search": "web_search",
         "web-fetch": "web_fetch",
         "delete-file": "delete_file",
+        "append_file": "append",
+        "append-file": "append",
     }
 
-    def __init__(self, extra_valid_tools: Optional[Set[str]] = None):
+    def __init__(
+        self,
+        extra_valid_tools: Optional[Set[str]] = None,
+        strict: bool = False,
+    ):
         if extra_valid_tools:
             self.VALID_TOOLS = self.VALID_TOOLS | set(extra_valid_tools)
+        # Strict mode is enabled by the main CLI/Web/Telegram loops: JSON only,
+        # no DSML, no truncated call ever executed.
+        self.strict = bool(strict)
 
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
 
     def parse(self, raw_response: str) -> Dict[str, Any]:
-        """Parse a raw LLM response and extract one or more tool calls.
+        """Parse a response, then apply the strict protocol guards if enabled."""
+        result = self._parse_unchecked(raw_response)
+        if not self.strict:
+            return result
+        return self._enforce_strict(raw_response, result)
+
+    def _enforce_strict(self, raw_response: str, result: Dict[str, Any]) -> Dict[str, Any]:
+        if not raw_response or not isinstance(raw_response, str):
+            return result
+
+        if _DSML_MARKER.search(raw_response) or _XML_TOOL_MARKER.search(raw_response):
+            return self._protocol_error(raw_response, result, DSML_PROTOCOL_ERROR)
+        if self._response_looks_truncated(raw_response):
+            return self._protocol_error(raw_response, result, TRUNCATED_PROTOCOL_ERROR)
+        for action in result.get("actions") or []:
+            content = action.get("content") or {}
+            if content and set(content.keys()) <= {"value", "_raw"}:
+                return self._protocol_error(raw_response, result, TRUNCATED_PROTOCOL_ERROR)
+        return result
+
+    @staticmethod
+    def _protocol_error(
+        raw_response: str, result: Dict[str, Any], message: str
+    ) -> Dict[str, Any]:
+        text = re.sub(r"```.*", "", raw_response, flags=re.S)
+        text = _DSML_MARKER.sub("", text)
+        text = _XML_TOOL_MARKER.sub("", text)
+        result["text"] = text.strip()
+        result["actions"] = []
+        result["action"] = None
+        result["protocol_error"] = message
+        return result
+
+    def _response_looks_truncated(self, raw_response: str) -> bool:
+        """Detect a provider that stopped mid-JSON instead of finishing the call."""
+        if raw_response.count("```") % 2 == 1:
+            # Only a fence that actually contains a tool-call object matters;
+            # an unfinished prose/code example must stay a normal answer.
+            tail = raw_response.rsplit("```", 1)[-1]
+            if _TOOL_KEY_MARKER.search(tail):
+                return True
+        for match in re.finditer(
+            r"```([a-zA-Z]*)\s*\n(.*?)(?:```|$)", raw_response, re.S
+        ):
+            label, body = match.group(1).lower(), match.group(2)
+            if label and label != "json":
+                continue
+            if not _TOOL_KEY_MARKER.search(body):
+                continue
+            if not self._json_structure_complete(body):
+                return True
+
+        # NemApi coupe aussi les appels emis SANS bloc ```json : le parseur
+        # permissif reconstruit alors un objet valide a partir d'un prefixe,
+        # ce qui ecrirait un fichier partiel. Verifier l'equilibre general.
+        if "```" not in raw_response and _TOOL_KEY_MARKER.search(raw_response):
+            starts = [i for i, char in enumerate(raw_response) if char in "{["]
+            if starts and not self._balanced_tool_object(raw_response, starts[0]):
+                return True
+        return False
+
+    @staticmethod
+    def _balanced_tool_object(text: str, start: int) -> bool:
+        """True si une structure JSON complete demarre a ``start``.
+
+        On s'arrete des que la structure exterieure se ferme, afin que la prose
+        qui suit (guillemets, apostrophes) ne fausse pas l'analyse. Seules les
+        chaines JSON a double quotes sont prises en compte.
+        """
+        pairs = {"{": "}", "[": "]"}
+        stack: List[str] = []
+        in_string = False
+        escape = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if escape:
+                escape = False
+                continue
+            if char == "\\":
+                if in_string:
+                    escape = True
+                continue
+            if char == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if char in pairs:
+                stack.append(pairs[char])
+            elif char in "}]":
+                if not stack or stack.pop() != char:
+                    return False
+                if not stack:
+                    return True
+        return False
+
+    @staticmethod
+    def _json_structure_complete(text: str) -> bool:
+        stack: List[str] = []
+        in_string = False
+        escape = False
+        for char in text:
+            if escape:
+                escape = False
+                continue
+            if char == "\\":
+                if in_string:
+                    escape = True
+                continue
+            if char == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if char in "{[":
+                stack.append("}" if char == "{" else "]")
+            elif char in "}]":
+                if not stack or stack.pop() != char:
+                    return False
+        return not in_string and not stack
+
+    def _parse_unchecked(self, raw_response: str) -> Dict[str, Any]:
+        """Permissive extraction, kept for legacy/non-NemApi providers.
 
         Returns:
             {"text": str, "actions": list, "action": first action or None}

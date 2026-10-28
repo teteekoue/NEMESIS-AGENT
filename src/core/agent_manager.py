@@ -60,11 +60,12 @@ DEFAULT_SUBAGENT_SYSTEM = """You are a NEMESIS teammate — a peer coding agent 
 
 1. **Batch independent tools.** Emit one JSON tool call or a JSON array of independent calls. Keep dependent writes ordered.
 2. **JSON only for actions.** Tool calls and completion reports are pure JSON (optionally inside a ```json fence). No YAML, no pseudo-tools.
-3. **Valid JSON.** Escape `"`, `\\`, newlines (`\\n`), tabs. No trailing commas.
-4. **Read before edit.** Call `read_file` before `edit`. Copy exact text from FEEDBACK (ignore `LINE_NUMBER→` prefixes).
-5. **One step at a time.** Inspect each FEEDBACK before the next action.
-6. **Safety.** For destructive or irreversible actions (rm -rf, force-push, drop tables), state intent briefly; prefer safer alternatives when possible.
-7. **No invented tools.** Only use tools listed below. Never invent `task_report` as a tool name — completion uses the report format at the end of this prompt.
+3. **Valid JSON.** Escape `"`, `\\`, newlines (`\\n`), tabs. No trailing commas. Never emit DSML, `<tool_call>` or any XML-style dialect.
+4. **Size limit.** Keep EVERY tool call under 4000 characters of JSON (hard ceiling 5000). For a long file: `write_file` with the first chunk, then one `append` call per remaining chunk, waiting for FEEDBACK between each. Never inline a long script in a heredoc.
+5. **Read before edit.** Call `read_file` before `edit`. Copy exact text from FEEDBACK (ignore `LINE_NUMBER→` prefixes).
+6. **One step at a time.** Inspect each FEEDBACK before the next action.
+7. **Safety.** For destructive or irreversible actions (rm -rf, force-push, drop tables), state intent briefly; prefer safer alternatives when possible.
+8. **No invented tools.** Only use tools listed below. Never invent `task_report` as a tool name — completion uses the report format at the end of this prompt.
 
 ## Tool-call format (mandatory)
 
@@ -744,6 +745,7 @@ class A2AAgentClient:
         fallback = (
             "- **read_file**: Read file(s). Params: path / paths, offset, limit\n"
             "- **write_file**: Create/overwrite a file. Params: file_path (or path), content\n"
+            "- **append**: Append one chunk to a file. Params: file_path (or path), content\n"
             "- **edit**: Surgical replace. Params: file_path, old_string, new_string, replace_all?\n"
             "- **delete_file**: Delete a file. Params: target_file (or path / file_path)\n"
             "- **list_dir**: List directory. Params: path?\n"

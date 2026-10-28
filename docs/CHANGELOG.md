@@ -4,6 +4,68 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
 
 ---
 
+## [Non publié] — Garde-fous d'appels d'outils (28 octobre 2026)
+
+Retour d'une session NemApi sur Android : `write_file` annonçait un succès alors
+que le fichier était absent ou tronqué au-delà de ~5,5–6,8 Ko, le `FEEDBACK`
+correspondait parfois à l'appel précédent, et le modèle émettait des blocs
+`<|DSML|>` ou des heredocs cassés. Tous les points du rapport sont traités.
+
+### Nouvel outil `append` (Web + CLI + Telegram)
+
+- `append` est enregistré dans le **registre unifié** (`src/core/agent_tools.py`) et
+  apparaît donc dans le catalogue du prompt, `/tools`, l'onglet Outils et les
+  schémas OpenAI. Il accepte `file_path` / `path` / `filename`, crée le fichier
+  et ses dossiers parents, et rapporte `bytes_written` / `total_bytes`.
+- Alias `append_file` ajouté au parseur, au schéma legacy et au pont ; l'ancien
+  chemin `__APPEND__:` reste compatible. Le bot Telegram ne redirige plus
+  `append` vers un outil inexistant.
+- Motif imposé pour un long fichier : `write_file` (premier bloc) puis un
+  `append` par bloc, un par message, avec vérification finale.
+
+### Taille, JSON strict et vérification
+
+- `src/core/system_prompt.py` enseigne une limite de **4 000 caractères de JSON
+  par appel** (tous outils) et interdit DSML, `<tool_call>`, heredocs, les
+  contournements `printf`/base64 et les enchaînements sans `FEEDBACK`.
+- `ToolBridge` applique un **plafond dur de 5 000 caractères** : l'appel est
+  refusé sans rien exécuter, avec un message demandant de le découper.
+- `ActionParser(strict=True)` est activé dans les trois boucles. Il rejette le
+  DSML/XML, un JSON dont une chaîne/un objet/une clôture de fence manque, et
+  les arguments non décodés. Plus de réparation silencieuse d'un appel tronqué.
+- `write_file` et `append` vérifient la taille réelle après écriture ; un écart
+  devient un échec explicite. Les erreurs de protocole sont renvoyées au modèle
+  (trois consécutives au maximum avant l'arrêt du tour).
+
+### Feedback, paramètres, documentation
+
+- `build_feedback_message()` ajoute `[call #N — M tool(s)]` à chaque `FEEDBACK`
+  dans CLI, Web et Telegram ; `protocol_error_feedback()` utilise le même
+  marqueur. Le prompt explique quoi faire si le marqueur se répète.
+- `validate_call()` normalise `file`, `target_file`, `target`, `name` et `files`,
+  ce qui élimine les faux « Parametres requis pour 'read_file' ».
+- Règles shell/Android (quoting, `realpath`, `screencap`, `KEYCODE_CTRL_A`)
+  ajoutées au prompt et détaillées dans **`docs/TOOL_LIMITS.md`**.
+- README, AGENTS.md, NEMESIS.md, docs/WEB_UI.md, TOOL_CALL_FORMATS.md,
+  prompts de secours et message `/start` Telegram mis à jour. Icône/libellé
+  `append` dans l'UI Web.
+
+### Vérification
+
+- 287 tests (`tests/test_tool_call_guards.py`, `tests/test_tool_loop_e2e.py`),
+  dont des scénarios complets sur les vraies boucles CLI/Web/Telegram avec un
+  provider stub local : écriture par blocs, appel tronqué refusé, DSML refusé,
+  corrélation du feedback, `tool_calls` natifs préservés.
+- Scénario **live** sur le serveur Web (`/ws/chat` + stub HTTP local sur
+  `127.0.0.1:8099`) : 14 vérifications OK — `/api/tools` expose `append`,
+  écriture en 3 blocs, prompt unique avec garde-fous, marqueurs `[call #N]`,
+  appel tronqué et DSML refusés puis reprise.
+- `nemesis --check` passe à **12 vérifications** (append, plafond de taille,
+  protocole strict), `compileall`, `tsc --noEmit` et `vite build` OK.
+  Aucune requête vers l'URL Cloudflared de l'utilisateur.
+
+---
+
 ## [Non publié] — Skills originaux et reprise de session sans prompt (26 octobre 2026)
 
 ### Skills : retour aux sources

@@ -56,11 +56,26 @@ TOOLS_SCHEMA: List[Dict[str, Any]] = [
     },
     {
         "name": 'append',
-        "description": "Ajoute du contenu à la fin d'un fichier",
+        "description": (
+            "Ajoute UN bloc de contenu à la fin d'un fichier (crée le fichier s'il "
+            "n'existe pas). Pour un long fichier : write_file pour le premier bloc, "
+            "puis un appel append par bloc suivant, chacun sous 4000 caractères de JSON."
+        ),
         "parameters": {
             'path': 'str - chemin du fichier',
             'file_path': 'str - alias de path',
-            'content': 'str - contenu a ajouter',
+            'filename': 'str - alias de path',
+            'content': 'str - UNIQUEMENT le bloc suivant a ajouter',
+        },
+        "handler_method": 'execute_append',
+    },
+    {
+        "name": 'append_file',
+        "description": "Alias de append : ajoute un bloc à la fin d'un fichier.",
+        "parameters": {
+            'path': 'str - chemin du fichier',
+            'file_path': 'str - alias de path',
+            'content': 'str - bloc a ajouter',
         },
         "handler_method": 'execute_append',
     },
@@ -331,6 +346,8 @@ def validate_tool_call(tool_name: str, parameters: Dict[str, Any]) -> tuple[bool
         "bash": ["command"],
         "write_file": ["content"],
         "write": ["content"],
+        "append": ["content"],
+        "append_file": ["content"],
         "edit": ["old_string", "new_string"],
         "search_replace": ["old_string", "new_string"],
         "grep": ["pattern"],
@@ -342,7 +359,7 @@ def validate_tool_call(tool_name: str, parameters: Dict[str, Any]) -> tuple[bool
     }
     path_aliases = ("file_path", "path", "filename", "file", "target_file")
     needs_path = {
-        "write", "write_file", "append", "replace", "edit", "search_replace",
+        "write", "write_file", "append", "append_file", "replace", "edit", "search_replace",
         "read", "read_file", "delete_file",
     }
     if tool_name in needs_path and not any(parameters.get(alias) for alias in path_aliases):

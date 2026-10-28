@@ -228,6 +228,73 @@ def _check_exit_code(root: str) -> CheckResult:
     return CheckResult("exit code et stderr remontes", ok, f"exit={result.get('exit_code')} sortie={result.get('stdout')!r}"[:200])
 
 
+def _check_append_chunks(root: str) -> CheckResult:
+    target = os.path.join(root, "long.txt")
+    bridge = _bridge()
+    first = _last(bridge.execute_tool("write_file", {"path": target, "content": "AAA"}))
+    second = _last(bridge.execute_tool("append", {"path": target, "content": "BBB"}))
+    third = _last(bridge.execute_tool("append", {"file_path": target, "content": "CCC"}))
+    content = open(target, encoding="utf-8").read() if os.path.isfile(target) else ""
+    ok = (
+        all(r.get("success") for r in (first, second, third))
+        and content == "AAABBBCCC"
+        and third.get("total_bytes") == 9
+    )
+    return CheckResult(
+        "write_file + append écrivent un fichier en plusieurs blocs",
+        ok,
+        f"contenu={content!r} total_bytes={third.get('total_bytes')}",
+    )
+
+
+def _check_oversized_call_rejected(root: str) -> CheckResult:
+    target = os.path.join(root, "trop_long.txt")
+    from .system_prompt import TOOL_CALL_HARD_LIMIT
+
+    result = _last(
+        _bridge().execute_tool(
+            "write_file",
+            {"path": target, "content": "x" * (TOOL_CALL_HARD_LIMIT + 500)},
+        )
+    )
+    ok = not result.get("success") and not os.path.exists(target)
+    return CheckResult(
+        "un appel d'outil surdimensionné est refusé sans rien écrire",
+        ok,
+        str(result.get("stdout") or result.get("error"))[:200],
+    )
+
+
+def _check_strict_protocol(root: str) -> CheckResult:
+    from action_parser import ActionParser
+
+    parser = ActionParser(strict=True)
+    truncated = '```json\n{"tool": "write_file", "parameters": {"path": "a.txt", "content": "coupe'
+    bare_truncated = '{"tool": "write_file", "parameters": {"path": "a.txt", "content": "coupe'
+    dsml = '<|DSML|>{"tool": "read_file", "parameters": {"path": "a.txt"}}'
+    valid = '```json\n{"tool": "read_file", "parameters": {"path": "a.txt"}}\n```'
+    p_trunc = parser.parse(truncated)
+    p_bare = parser.parse(bare_truncated)
+    p_dsml = parser.parse(dsml)
+    p_valid = parser.parse(valid)
+    ok = (
+        bool(p_trunc.get("protocol_error"))
+        and not p_trunc.get("actions")
+        and bool(p_bare.get("protocol_error"))
+        and not p_bare.get("actions")
+        and bool(p_dsml.get("protocol_error"))
+        and not p_dsml.get("actions")
+        and not p_valid.get("protocol_error")
+        and len(p_valid.get("actions") or []) == 1
+    )
+    return CheckResult(
+        "DSML et JSON tronqué rejetés, JSON valide accepté",
+        ok,
+        f"tronque={bool(p_trunc.get('protocol_error'))} sans_fence={bool(p_bare.get('protocol_error'))} "
+        f"dsml={bool(p_dsml.get('protocol_error'))} valide={len(p_valid.get('actions') or [])}",
+    )
+
+
 def _bridge():
     from .tool_bridge import ToolBridge
 
@@ -249,6 +316,9 @@ def run_selfcheck() -> List[CheckResult]:
         ("apply_patch avec `workdir`", _check_apply_patch_workdir),
         ("apply_patch trouve le fichier hors du répertoire courant", _check_patch_from_another_directory),
         ("exit code et stderr remontes", _check_exit_code),
+        ("write_file + append en plusieurs blocs", _check_append_chunks),
+        ("appel surdimensionné refusé", _check_oversized_call_rejected),
+        ("protocole JSON strict", _check_strict_protocol),
     ]
     results: List[CheckResult] = []
     try:

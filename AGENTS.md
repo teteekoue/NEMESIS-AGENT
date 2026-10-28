@@ -108,6 +108,18 @@ Répertoire de config surchargeable par `NEMESIS_CONFIG_DIR`.
 
 ---
 
+## Protocole d'outils (important)
+
+- `src/core/system_prompt.py` est l'unique source du prompt : CLI, Web et Telegram
+  utilisent `build_system_prompt()` et le même `ToolRegistry`.
+- Toute réponse outil est un **objet JSON valide dans un bloc ```json**. Le DSML et les
+  dialectes XML sont interdits ; `ActionParser(strict=True)` rejette aussi le JSON tronqué
+  au lieu de le réparer silencieusement.
+- Limite par appel : 4 000 caractères enseignés dans le prompt, 5 000 appliqués par
+  `ToolBridge`. Un long fichier = `write_file` puis plusieurs `append`.
+- Les blocs `FEEDBACK` sont corrélés par `build_feedback_message()` (`[call #N — …]`).
+- Voir [docs/TOOL_LIMITS.md](docs/TOOL_LIMITS.md).
+
 ## Décisions d'architecture (importantes)
 
 - **Skills intégrés = originaux GitHub** : ne jamais réécrire un `SKILL.md`

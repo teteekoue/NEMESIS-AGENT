@@ -42,6 +42,8 @@ type IconType = React.ComponentType<{ className?: string }>;
 const TOOL_ICONS: Record<string, IconType> = {
   read_file: FileText,
   write_file: FilePlus2,
+  append: FilePlus2,
+  append_file: FilePlus2,
   edit: FilePen,
   apply_patch: FileCode2,
   delete_file: Trash2,
@@ -81,6 +83,8 @@ const META_KEYS = new Set([
 const COMMANDS: Record<string, string> = {
   read_file: "Lire",
   write_file: "Écrire",
+  append: "Ajouter",
+  append_file: "Ajouter",
   edit: "Modifier",
   apply_patch: "Patch",
   delete_file: "Supprimer",
