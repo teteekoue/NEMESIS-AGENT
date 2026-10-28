@@ -69,13 +69,14 @@ def test_prompt_teaches_all_guards(tmp_path):
 
 def test_cli_web_telegram_use_the_same_generated_prompt(tmp_path):
     # CLI et Web passent par ToolBridge.get_system_prompt(), Telegram par
-    # build_system_prompt() directement : les deux doivent exposer append.
+    # build_system_prompt() directement : les outils communs sont identiques.
     bridge_prompt = ToolBridge(
         workspace=str(tmp_path), enable_subagents=False
     ).get_system_prompt()
     telegram_prompt = build_system_prompt(create_registry(str(tmp_path)))
     for prompt in (bridge_prompt, telegram_prompt):
-        assert "**append**" in prompt
+        for tool_name in ("append", "schedule_task", "list_scheduled_tasks", "cancel_scheduled_task", "wait"):
+            assert f"**{tool_name}**" in prompt
         assert "DSML" in prompt
         assert str(TOOL_CALL_CHAR_BUDGET) in prompt
 
@@ -119,6 +120,15 @@ def test_append_creates_file_and_parent_directories(bridge, tmp_path):
     assert result["success"]
     assert target.read_text() == "bloc"
     assert result["total_bytes"] == 4
+
+
+@pytest.mark.parametrize("tool_name", ["schedule_task", "list_scheduled_tasks", "cancel_scheduled_task", "wait"])
+def test_scheduler_tools_are_recognized_by_strict_parser(tool_name):
+    params = {"instruction": "Vérifier le rapport", "delay_seconds": 10} if tool_name == "schedule_task" else {}
+    raw = "```json\\n" + json.dumps({"tool": tool_name, "parameters": params}) + "\\n```"
+    parsed = ActionParser(strict=True).parse(raw)
+    assert parsed.get("protocol_error") is None
+    assert parsed["action"]["type"] == tool_name
 
 
 def test_append_alias_is_supported(bridge, tmp_path):

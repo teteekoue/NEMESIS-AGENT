@@ -61,6 +61,10 @@ const TOOL_ICONS: Record<string, IconType> = {
   list_agents: LayoutList,
   agent_status: CalendarClock,
   get_task_output: CalendarClock,
+  schedule_task: CalendarClock,
+  list_scheduled_tasks: CalendarClock,
+  cancel_scheduled_task: Trash2,
+  wait: CalendarClock,
   kill_task: Trash2,
   delegate_task: Sparkles,
   skills_list: Puzzle,
@@ -78,6 +82,10 @@ const META_KEYS = new Set([
   "case_insensitive",
   "max_results",
   "force",
+  "run_at",
+  "delay_seconds",
+  "seconds",
+  "reason",
 ]);
 
 const COMMANDS: Record<string, string> = {
@@ -103,12 +111,16 @@ const COMMANDS: Record<string, string> = {
   agent_status: "Statut agent",
   get_task_output: "Sortie tâche",
   kill_task: "Arrêter tâche",
+  schedule_task: "Programmer tâche",
+  list_scheduled_tasks: "Tâches programmées",
+  cancel_scheduled_task: "Annuler programmation",
+  wait: "Patienter",
   delegate_task: "Déléguer",
   skills_list: "Compétences",
 };
 
 const PATH_KEYS = ["file_path", "path", "target_file", "filename"];
-const TEXT_KEYS = ["content", "new_string", "old_string", "patch", "command"];
+const TEXT_KEYS = ["content", "new_string", "old_string", "patch", "command", "instruction"];
 const QUERY_KEYS = ["pattern", "query", "url", "action", "content", "server", "tool"];
 
 function firstString(params: Record<string, unknown>, keys: string[]): string | undefined {

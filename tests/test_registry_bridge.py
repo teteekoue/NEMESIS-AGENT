@@ -9,7 +9,8 @@ from src.core.agent_tools import create_registry, build_system_prompt, build_fee
 class TestToolRegistry:
     def test_create_registry(self, tmp_path):
         reg = create_registry(str(tmp_path))
-        assert len(reg) == 26
+        assert len(reg) == 30
+        assert {"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task", "wait"} <= set(reg._tools)
         assert "read_file" in reg
         assert "edit" in reg
         assert "bash" in reg
@@ -31,7 +32,7 @@ class TestToolRegistry:
     def test_get_openai_functions(self, tmp_path):
         reg = create_registry(str(tmp_path))
         funcs = reg.get_openai_functions()
-        assert len(funcs) == 26
+        assert len(funcs) == 30
         for f in funcs:
             assert f["type"] == "function"
             assert "name" in f["function"]
@@ -65,7 +66,7 @@ class TestToolBridge:
             "subagents": {"api_key": "test-key"},
         })
         assert tb.get_system_prompt() is not None
-        assert len(tb.get_openai_tools()) == 28
+        assert len(tb.get_openai_tools()) == 32
         names = {tool["function"]["name"] for tool in tb.get_openai_tools()}
         assert {"delegate_tasks", "subagent_status"} <= names
 

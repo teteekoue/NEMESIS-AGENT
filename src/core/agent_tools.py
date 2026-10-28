@@ -40,6 +40,7 @@ from .memory_store import (
     get_block,
     set_enabled as memory_set_enabled,
 )
+from .scheduler import current_scheduler_context, get_scheduler, wait_for
 
 
 def _delegate_subagent_tasks(fleet, tasks):
@@ -101,6 +102,31 @@ def _format_subagent_status(fleet, task_id=""):
             lines.append(f"  Rapport :\n{report}")
     result["stdout"] = "\n".join(lines)
     return result
+
+
+def _schedule_agent_task(instruction, run_at=None, delay_seconds=None):
+    owner_id, target_id = current_scheduler_context()
+    return get_scheduler().schedule(
+        instruction,
+        run_at=run_at,
+        delay_seconds=delay_seconds,
+        owner_id=owner_id,
+        target_id=target_id,
+    )
+
+
+def _list_scheduled_tasks():
+    owner_id, target_id = current_scheduler_context()
+    return get_scheduler().list_tasks(owner_id, target_id)
+
+
+def _cancel_scheduled_task(task_id):
+    owner_id, target_id = current_scheduler_context()
+    return get_scheduler().cancel(task_id, owner_id, target_id)
+
+
+def _wait_tool(seconds, reason="", cancel_event=None):
+    return wait_for(seconds, reason, cancel_event=cancel_event)
 
 
 def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
@@ -775,6 +801,63 @@ def create_registry(workspace_dir: str, subagent_fleet=None) -> ToolRegistry:
         description="Delete ALL memory blocks. Irreversible; ask before using.",
         params_schema={"type": "object", "properties": {}},
         risk="high",
+    )
+
+    registry.register(
+        name="schedule_task",
+        kind=ToolKind.TASK,
+        handler=_schedule_agent_task,
+        description=(
+            "One-shot agent task; give run_at (ISO 8601 + timezone) OR delay_seconds. High risk: "
+            "approval authorizes autonomous execution. Persisted across restarts. The instruction "
+            "runs when due, even if the chat is idle."
+        ),
+        params_schema={
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "The self-contained task the agent should perform when it wakes."},
+                "run_at": {"type": "string", "description": "Local/offset ISO 8601 date-time, e.g. 2026-10-29T09:00:00+00:00."},
+                "delay_seconds": {"type": "number", "description": "Run after this many seconds from now."},
+            },
+            "required": ["instruction"],
+            "anyOf": [{"required": ["run_at"]}, {"required": ["delay_seconds"]}],
+        },
+        risk="high",
+    )
+    registry.register(
+        name="list_scheduled_tasks",
+        kind=ToolKind.MONITOR,
+        handler=_list_scheduled_tasks,
+        description="List scheduled tasks belonging to the current interface/session, including their time and status.",
+        params_schema={"type": "object", "properties": {}},
+        risk="read",
+    )
+    registry.register(
+        name="cancel_scheduled_task",
+        kind=ToolKind.TASK,
+        handler=_cancel_scheduled_task,
+        description="Cancel a pending scheduled task by its ID. A task that has already started cannot be cancelled here.",
+        params_schema={
+            "type": "object",
+            "properties": {"task_id": {"type": "string", "description": "ID returned by schedule_task or list_scheduled_tasks."}},
+            "required": ["task_id"],
+        },
+        risk="high",
+    )
+    registry.register(
+        name="wait",
+        kind=ToolKind.OTHER,
+        handler=_wait_tool,
+        description="Wait for a requested duration, then continue the task. Use this to pause briefly; for long delays, prefer schedule_task so NEMESIS can wake independently.",
+        params_schema={
+            "type": "object",
+            "properties": {
+                "seconds": {"type": "number", "description": "How long to wait, in seconds."},
+                "reason": {"type": "string", "description": "Optional short explanation for this pause."},
+            },
+            "required": ["seconds"],
+        },
+        risk="read",
     )
 
     if subagent_fleet is not None:

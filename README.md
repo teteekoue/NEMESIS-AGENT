@@ -296,7 +296,8 @@ reste le cas connu où l'upload peut échouer côté page web).
 
 - **Mémoire** — blocs durables réinjectés dans le prompt système, partagés entre les trois surfaces. Détails : [docs/MEMORY.md](docs/MEMORY.md).
 - **GitHub** — collez un PAT dans l'onglet GitHub : NEMESIS crée un serveur MCP (`npx -y @modelcontextprotocol/server-github`) et expose les outils GitHub sans alourdir le registre principal. Détails : [docs/GITHUB.md](docs/GITHUB.md).
-- **Telegram** — token configurable depuis le Web ; même moteur, même mémoire, toutes autorisations. Commandes : `/start`, `/help`, `/tools`, `/new`, `/clear`. Raccourcis : `web_search:requête`, `web_fetch:url`, `bash:commande`, `read:fichier`.
+- **Telegram** — token configurable depuis le Web ; même moteur et même mémoire. Les planifications peuvent réveiller l'agent à l'échéance ; les réponses finales Markdown sont converties en texte brut structuré. Commandes : `/start`, `/help`, `/tools`, `/new`, `/clear`. Raccourcis : `web_search:requête`, `web_fetch:url`, `bash:commande`, `read:fichier`.
+- **Planification** — `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` et `wait` sont disponibles dans les trois interfaces. Les tâches ponctuelles sont stockées dans SQLite et reprises au prochain démarrage ; voir [docs/SCHEDULING.md](docs/SCHEDULING.md).
 
 ---
 
@@ -342,6 +343,7 @@ Détails : [docs/WEB_UI.md](docs/WEB_UI.md).
 - [NEMESIS.md](NEMESIS.md) — Architecture détaillée
 - [TOOL_CALL_FORMATS.md](TOOL_CALL_FORMATS.md) — Formats d'appels d'outils
 - [docs/TOOL_LIMITS.md](docs/TOOL_LIMITS.md) — Limites du runtime, taille des appels, DSML, heredoc
+- [docs/SCHEDULING.md](docs/SCHEDULING.md) — Planification persistante, réveil autonome et outil wait
 
 ---
 

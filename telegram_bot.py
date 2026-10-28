@@ -18,6 +18,7 @@ import asyncio
 import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
+from types import SimpleNamespace
 
 if getattr(sys, "frozen", False):
     script_dir = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
@@ -41,6 +42,7 @@ from src.core.agent_tools import create_registry
 from providers import create_provider, list_providers
 from tools import ActionExecutor
 from src.core.tool_bridge import ToolBridge
+from src.core.telegram_format import markdown_to_plain_text
 from tools_schema import get_tool_handler_method, validate_tool_call
 from action_parser import ActionParser
 
@@ -185,8 +187,12 @@ class NemesisTelegramBot:
         self.bot: Optional[Bot] = None
         self.app: Optional[Application] = None
         self.registry = None
-        self.executor = ToolBridge(workspace=self.workspace)
+        self.executor = ToolBridge(workspace=self.workspace, scheduler_owner_id="telegram")
         self.parser = ActionParser(strict=True)
+        self._event_loop = None
+        from src.core.scheduler import get_scheduler
+
+        get_scheduler().register_handler("telegram:*", self._run_scheduled_task)
         self.providers: Dict[int, Any] = {}
         self._session_authorized_tools: Dict[int, set] = {}
         self._feedback_sequences: Dict[int, int] = {}
@@ -281,6 +287,7 @@ class NemesisTelegramBot:
             "/history - Gerer l'historique\n\n"
             "*[TOOLS] Outils integrés :*\n"
             "read_file, write_file, append, bash, grep, list_dir, web_search, web_fetch\n"
+            "schedule_task, list_scheduled_tasks, cancel_scheduled_task, wait\n"
             "mcp_list, mcp_tools_list, mcp_call, et bien plus!\n\n"
             "*[INFO] Les appels d'outils et les tours internes restent invisibles : "
             "je vous renvoie uniquement la synthese finale.*"
@@ -321,7 +328,8 @@ class NemesisTelegramBot:
             "       /bash: commande\n"
             "       /grep: pattern\n"
             "       /search: requete\n"
-            "       /fetch: url\n\n"
+            "       /fetch: url\n"
+            "Planifiez une tâche avec l'agent ou demandez-lui de patienter.\n\n"
             "*[LOCK] Securite :*\n"
             "Les actions sensibles demandent confirmation."
         )
@@ -940,6 +948,7 @@ class NemesisTelegramBot:
                 return {"success": False, "error": f"Outil inconnu: {tool_name}"}
 
             parameters = self._normalize_parameters(tool_name, parameters)
+            self.executor.set_scheduler_context(f"telegram:{chat_id}", str(chat_id))
             tool_updates = list(self.executor.execute_tool(tool_name, parameters))
             result = tool_updates[-1] if tool_updates else {
                 "success": False,
@@ -1005,9 +1014,36 @@ class NemesisTelegramBot:
                 logger.warning(f"Image Telegram ignorée: {exc}")
         return specs
 
+    def _run_scheduled_task(self, task: dict) -> dict:
+        """Run a scheduled task for its originating Telegram chat and notify it."""
+        from src.core.scheduler import schedule_agent_task
+
+        target = task.get("target_id")
+        if target is None:
+            return {"success": False, "error": "Chat Telegram absent pour cette tâche."}
+        chat_id = int(target)
+        config = self._get_chat_config(chat_id)
+        result = schedule_agent_task(
+            config, task["instruction"], f"telegram:{chat_id}", str(chat_id)
+        )
+        final_text = result.get("text") or result.get("error") or "La tâche planifiée est terminée."
+        text = self._format_ai_response([f"Tâche planifiée — {task['task_id']}\n\n{final_text}"], "nemapi", config.get("nemapi", {}).get("model", ""))
+        loop = self._event_loop
+        bot = self.app.bot if self.app is not None else self.bot
+        if loop is not None and loop.is_running() and bot is not None:
+            future = asyncio.run_coroutine_threadsafe(
+                self._send_long_message(SimpleNamespace(bot=bot), chat_id, text), loop
+            )
+            future.add_done_callback(
+                lambda done: logger.error("Envoi de notification de tâche planifiée échoué: %s", done.exception())
+                if done.exception() else None
+            )
+        return result
+
     async def _process_ai_request(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
                                   message: str, chat_id: int, images: Optional[List[Any]] = None):
         """Traite une requete pour l'IA - version simplifiée sans autorisations."""
+        self._event_loop = asyncio.get_running_loop()
         config = self._get_chat_config(chat_id)
         provider_type = "nemapi"
         model = config.get("nemapi", {}).get("model", "")
@@ -1176,67 +1212,32 @@ class NemesisTelegramBot:
             return "You are NEMESIS. Use only the tools provided by the runtime."
 
     def _format_ai_response(self, outputs: List[str], provider_type: str, model: str) -> str:
-        """Formate la réponse de l'IA comme dans le CLI NEMESIS."""
-        combined_text = '\n\n'.join(outputs)
-        
-        # Nettoyer les balises HTML restantes
-        import re
-        combined_text = re.sub(r'<[^>]+>', '', combined_text)
-        
-        # Formater sans Markdown pour éviter les erreurs de parsing
-        if model:
-            header = f"⚡ NEMESIS [{provider_type}] ({model}) :"
-        else:
-            header = f"⚡ NEMESIS [{provider_type}] :"
-        
-        return f"{header}\n\n{combined_text}"
+        """Convertit uniquement le texte final Markdown en texte clair structuré."""
+        combined_text = markdown_to_plain_text("\n\n".join(outputs))
+        header = f"NEMESIS — {provider_type} ({model})" if model else f"NEMESIS — {provider_type}"
+        return f"{header}\n\n{combined_text}".strip()
     
     async def _send_long_message(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str):
-        """Envoie un message long en le découpant si nécessaire (limite 4096 caractères)."""
-        MAX_LENGTH = 3900  # Légèrement en dessous de la limite pour éviter les problèmes de parse
-        
-        # Nettoyer le texte pour éviter les erreurs de parsing Markdown
-        import re
-        # Remplacer les caractères problématiques
-        text = re.sub(r'([*_`])(?![^*_`]*\1)', r'\\\1', text)  # Échapper les caractères Markdown simples
-        # Remplacer les triples backticks problématiques
-        text = re.sub(r'```(?:[a-zA-Z]+)?\n', '```\n', text)
-        
-        if len(text) <= MAX_LENGTH:
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
-            except Exception:
-                # En cas d'erreur Markdown, envoyer sans formatage
-                await context.bot.send_message(chat_id=chat_id, text=text)
-            return
-        
-        # Découper le message en plusieurs parties
-        parts = []
-        current_part = ""
-        
-        for line in text.split('\n'):
-            if len(current_part) + len(line) + 1 > MAX_LENGTH:
-                parts.append(current_part)
-                current_part = line
-            else:
-                if current_part:
-                    current_part += '\n' + line
+        """Envoie du texte brut, découpé sans dépasser la limite Telegram."""
+        max_length = 3850  # Reserve room for the [Partie x/y] prefix.
+        parts: List[str] = []
+        current = ""
+        for line in str(text).splitlines():
+            pieces = [line[i:i + max_length] for i in range(0, len(line), max_length)] or [""]
+            for piece in pieces:
+                candidate = f"{current}\n{piece}" if current else piece
+                if len(candidate) > max_length and current:
+                    parts.append(current)
+                    current = piece
                 else:
-                    current_part = line
-        
-        if current_part:
-            parts.append(current_part)
-        
-        # Envoyer chaque partie avec un indicateur de progression
-        for i, part in enumerate(parts, 1):
+                    current = candidate
+        if current or not parts:
+            parts.append(current)
+
+        for index, part in enumerate(parts, 1):
             if len(parts) > 1:
-                header = f"[Partie {i}/{len(parts)}]\n\n"
-                part = header + part
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=part, parse_mode="Markdown")
-            except Exception:
-                # En cas d'erreur Markdown, envoyer sans formatage
-                await context.bot.send_message(chat_id=chat_id, text=part)
+                part = f"Partie {index}/{len(parts)}\n\n{part}"
+            await context.bot.send_message(chat_id=chat_id, text=part)
 
     def _tool_result_text(self, result: Dict[str, Any]) -> str:
         """Texte d'un résultat d'outil: sortie, stderr et code de sortie."""
@@ -1514,6 +1515,10 @@ class NemesisTelegramBot:
     # DEMARRAGE
     # =============================================================================
 
+    async def _post_init(self, application: Application) -> None:
+        self._event_loop = asyncio.get_running_loop()
+        self.bot = application.bot
+
     def run(self):
         """Demarre le bot."""
         if not self.token:
@@ -1524,6 +1529,7 @@ class NemesisTelegramBot:
             .connect_timeout(30.0)
             .read_timeout(30.0)
             .write_timeout(30.0)
+            .post_init(self._post_init)
             .build())
         
         # Ajouter les handlers

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
+from contextlib import asynccontextmanager
 import os
 import threading
 from pathlib import Path
@@ -31,7 +32,23 @@ from web.backend.config_store import (
     load_config,
 )
 
-app = FastAPI(title="NEMESIS Web API", version="1.0.0")
+def _run_scheduled_web_task(task: dict) -> dict:
+    from src.core.scheduler import schedule_agent_task
+
+    config = load_config()
+    return schedule_agent_task(config, task["instruction"], "web", task.get("target_id"))
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    from src.core.scheduler import get_scheduler
+
+    get_scheduler().register_handler("web", _run_scheduled_web_task)
+    yield
+
+
+app = FastAPI(title="NEMESIS Web API", version="1.0.0", lifespan=_lifespan)
+
 
 # The shared shell directory starts at the configured starting point (or the
 # process directory). It is never a sandbox: any path can be used afterwards.
