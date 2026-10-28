@@ -4,6 +4,19 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
 
 ---
 
+## [Non publié] — Planification autonome et affichage Telegram lisible (28 octobre 2026)
+
+- Ajout de `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` et
+  `wait` au registre partagé par le CLI, le Web et Telegram. Les tâches planifiées
+  sont ponctuelles, persistées en SQLite, exécutées à l'échéance par un provider
+  isolé et consultables/annulables dans leur interface d'origine. Les échéances
+  passées sont reprises quand NEMESIS est actif ; les tâches planifiées sont
+  soumises à l'approbation de l'interface au moment de leur création.
+- Les réponses finales Telegram convertissent désormais le Markdown en texte
+  brut avec titres, listes, citations, tableaux, liens et code structurés. Seule
+  la réponse finale est envoyée; les appels d'outils intermédiaires restent internes.
+- Résultat des tests à cette version : 301 tests réussis, 1 ignoré.
+
 ## [Non publié] — Garde-fous d'appels d'outils (28 octobre 2026)
 
 Retour d'une session NemApi sur Android : `write_file` annonçait un succès alors
@@ -35,7 +48,8 @@ correspondait parfois à l'appel précédent, et le modèle émettait des blocs
   les arguments non décodés. Plus de réparation silencieuse d'un appel tronqué.
 - `write_file` et `append` vérifient la taille réelle après écriture ; un écart
   devient un échec explicite. Les erreurs de protocole sont renvoyées au modèle
-  (trois consécutives au maximum avant l'arrêt du tour).
+  sans plafond de tentatives ; le tour s'arrête uniquement sur complétion,
+  interruption utilisateur ou échec du provider.
 
 ### Feedback, paramètres, documentation
 

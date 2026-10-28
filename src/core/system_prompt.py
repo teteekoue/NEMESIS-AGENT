@@ -194,6 +194,12 @@ used to be executed with partial content while still reporting success.
   MCP, delegation) unless you are certain they are independent.
 - There is **no iteration ceiling** on the operating loop below: keep working
   until the goal is genuinely reached, the user interrupts, or the provider fails.
+- Use `wait` only for a short pause in the current task. For a future action or a
+  long delay, use `schedule_task` with a clear instruction and either an ISO 8601
+  `run_at` time (include the timezone/UTC offset) or `delay_seconds`. Scheduling is
+  one-shot; confirm the scheduled time and ID from tool feedback. Use
+  `list_scheduled_tasks` to check status and `cancel_scheduled_task` to cancel.
+  Do not schedule future actions unless the user asks for them.
 
 ## 6. Operating loop
 

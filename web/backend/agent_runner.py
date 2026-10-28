@@ -67,6 +67,13 @@ class AgentRunner:
         if hasattr(self.provider, "configure_session"):
             self.provider.configure_session(session_id, initialized=self._session_initialized)
         self.executor = create_executor_from_config(config, bridge=self.provider)
+        if hasattr(self.executor, "set_scheduler_context"):
+            self.executor.set_scheduler_context("web", session_id)
+        from src.core.scheduler import get_scheduler
+
+        self._scheduled_handler = self._run_scheduled_task
+        if session_id:
+            get_scheduler().register_handler("web", self._scheduled_handler, str(session_id))
         if hasattr(self.executor, "set_cancel_event"):
             self.executor.set_cancel_event(self._interrupt)
         if hasattr(self.executor, "set_subagent_authorizer"):
@@ -135,6 +142,11 @@ class AgentRunner:
         if not sid or self.session_id is not None:
             return
         self.session_id = sid
+        from src.core.scheduler import get_scheduler
+
+        get_scheduler().register_handler("web", self._scheduled_handler, sid)
+        if hasattr(self.executor, "set_scheduler_context"):
+            self.executor.set_scheduler_context("web", sid)
         initialized = False
         try:
             from web.backend import sessions as session_store
@@ -158,6 +170,12 @@ class AgentRunner:
 
     def close(self) -> None:
         self.request_interrupt()
+        if self.session_id:
+            from src.core.scheduler import get_scheduler
+
+            get_scheduler().unregister_handler(
+                "web", self._scheduled_handler, str(self.session_id)
+            )
         if hasattr(self.executor, "close"):
             self.executor.close()
 
@@ -405,6 +423,20 @@ class AgentRunner:
             continue
 
         return tool_count
+
+    def _run_scheduled_task(self, task: dict) -> dict:
+        """Run a due task on an isolated provider and publish its result to the owning chat."""
+        from src.core.scheduler import schedule_agent_task
+
+        self.emit("notice", message=f"Réveil : exécution de la tâche planifiée {task['task_id']}…")
+        result = schedule_agent_task(
+            self.config, task["instruction"], "web", task.get("target_id")
+        )
+        if task.get("target_id") == self.session_id and result.get("text"):
+            self.emit("assistant_text", text=f"Tâche planifiée — {task['task_id']}\n\n{result['text']}", at=time.time())
+        elif not result.get("success"):
+            self.emit("notice", message=f"Échec de la tâche planifiée {task['task_id']}: {result.get('error', 'erreur inconnue')}")
+        return result
 
     # ------------------------------------------------------------------
     # helpers

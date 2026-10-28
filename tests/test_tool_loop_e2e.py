@@ -408,6 +408,45 @@ def test_telegram_loop_writes_a_long_file_with_append(tmp_path, monkeypatch):
     executor.close()
 
 
+def test_telegram_displays_only_the_final_reply_as_readable_plain_text(tmp_path):
+    telegram_bot = pytest.importorskip("telegram_bot")
+
+    target = tmp_path / "value.txt"
+    target.write_text("vérifié", encoding="utf-8")
+    first = "Je commence par vérifier.\n" + _call("read_file", path=str(target))
+    final = "## Résultat\n\nLe contenu est **vérifié** : `vérifié`.\n\n- étape une\n- étape deux"
+    provider = ScriptedProvider([first, final])
+    executor = ToolBridge(workspace=str(tmp_path), enable_subagents=False)
+    bot = telegram_bot.NemesisTelegramBot.__new__(telegram_bot.NemesisTelegramBot)
+    bot.workspace = str(tmp_path)
+    bot.executor = executor
+    bot.registry = executor.registry
+    bot.parser = ActionParser(strict=True)
+    bot.providers = {4242: provider}
+    bot.prompt_system_sent = {}
+    bot.pending_actions = {}
+    bot._feedback_sequences = {}
+    bot._session_authorized_tools = {}
+    bot._event_loop = None
+    bot._get_chat_config = lambda chat_id: {"nemapi": {"model": "stub-local"}}
+    bot._get_provider = lambda chat_id: provider
+    bot._cleanup_thinking_message = lambda context, chat_id, status: asyncio.sleep(0)
+    context = _FakeContext()
+
+    asyncio.run(
+        bot._process_ai_request(_FakeUpdate(), context, "Vérifie puis résume.", 4242)
+    )
+
+    final_message = context.bot.sent[-1]
+    assert "Résultat" in final_message
+    assert "vérifié" in final_message
+    assert "• étape une" in final_message
+    assert "**" not in final_message and "`" not in final_message
+    assert "Je commence par vérifier" not in final_message
+    assert len([text for text in context.bot.sent if text.startswith("NEMESIS")]) == 1
+    executor.close()
+
+
 def test_telegram_execute_tool_accepts_append(tmp_path):
     telegram_bot = pytest.importorskip("telegram_bot")
 

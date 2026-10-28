@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import tempfile
+import threading
 import yaml
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -64,6 +65,7 @@ class NemesisApp:
         self._session_initialized = False
         # Flag pour gérer l'interruption propre
         self._interrupted = False  # True si l'utilisateur a interrompu la tâche en cours
+        self._interrupt_event = threading.Event()
 
     _MAX_HIDDEN_OUTPUTS = 200
 
@@ -329,6 +331,7 @@ class NemesisApp:
         else:
             # Premier Ctrl+C : interrompre la tâche en cours
             self._interrupted = True
+            self._interrupt_event.set()
             self.last_interrupt = now
             self.console.print("\n[yellow] Tâche interrompue. Tapez Ctrl+C encore pour forcer la fermeture.[/yellow]")
 
@@ -424,11 +427,28 @@ class NemesisApp:
                 return
             self.console.print("[dim]Répondez par o (oui) ou n (non).[/dim]")
 
+    def _run_scheduled_task(self, task):
+        """Execute a due task independently and report its final answer in the CLI."""
+        from src.core.scheduler import schedule_agent_task
+
+        self.console.print(f"[yellow] Tâche planifiée réveillée ({task['task_id']})…[/yellow]")
+        result = schedule_agent_task(self.config, task["instruction"], "cli")
+        if result.get("success"):
+            final_text = result.get("text") or "La tâche est terminée sans réponse textuelle."
+            self.console.print(f"[green] Tâche planifiée terminée : {task['task_id']}[/green]")
+            self.console.print(final_text)
+        else:
+            self.console.print(f"[red] Échec de la tâche planifiée : {result.get('error', 'erreur inconnue')}[/red]")
+        return result
+
     def _process_cycle(self, message: str):
         from src.core.default_commands import increment_message_count
         
-        # Réinitialiser le flag d'interruption au début d'un nouveau cycle
+        # Réinitialiser les drapeaux d'interruption au début d'un nouveau cycle
         self._interrupted = False
+        interrupt_event = getattr(self, "_interrupt_event", None)
+        if interrupt_event is not None:
+            interrupt_event.clear()
         cycle_started = time.time()
         cycle_tools = 0
         cycle_files: set[str] = set()
@@ -724,6 +744,13 @@ class NemesisApp:
             return
 
         self.executor = create_executor_from_config(self.config, bridge=self.client)
+        if hasattr(self.executor, "set_scheduler_context"):
+            self.executor.set_scheduler_context("cli")
+        if hasattr(self.executor, "set_cancel_event"):
+            self.executor.set_cancel_event(self._interrupt_event)
+        from src.core.scheduler import get_scheduler
+
+        get_scheduler().register_handler("cli", self._run_scheduled_task)
         # Synchroniser le parseur avec les outils de l'executeur
         if hasattr(self.executor, "registry") and self.executor.registry:
             extra_tools = set(self.executor.registry._tools.keys())

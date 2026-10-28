@@ -328,6 +328,10 @@ def tools_command(args=None):
         ("mcp_call", "Appel d'un outil MCP"),
         ("delegate_tasks", "Lancement de tâches indépendantes en parallèle"),
         ("subagent_status", "Suivi et résultats des tâches temporaires"),
+        ("schedule_task", "Planification ponctuelle d'une tâche autonome"),
+        ("list_scheduled_tasks", "État des tâches programmées"),
+        ("cancel_scheduled_task", "Annulation d'une tâche en attente"),
+        ("wait", "Pause du tour courant"),
     ]
     active_registry = getattr(getattr(_active_app, "executor", None), "registry", None)
     if active_registry is not None:

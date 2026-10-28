@@ -11,6 +11,7 @@ from pathlib import Path
 from src.core.agent_tools import create_registry, build_system_prompt, build_feedback
 from src.core.system_prompt import TOOL_CALL_HARD_LIMIT, OVERSIZED_PROTOCOL_ERROR
 from src.core.tools.bash import run_bash_streamed
+from src.core.scheduler import scheduler_context
 
 
 class ToolBridge:
@@ -22,6 +23,8 @@ class ToolBridge:
         cancel_event=None,
         config: Dict[str, Any] | None = None,
         enable_subagents: bool = True,
+        scheduler_owner_id: str = "default",
+        scheduler_target_id: str | None = None,
     ):
         raw_workspace = str(workspace).strip() if workspace else ""
         self.workspace_root = (
@@ -34,6 +37,8 @@ class ToolBridge:
             from src.core.subagents import SubagentFleet
 
             self.subagent_fleet = SubagentFleet(config or {}, str(self.workspace_root))
+        self.scheduler_owner_id = scheduler_owner_id or "default"
+        self.scheduler_target_id = str(scheduler_target_id) if scheduler_target_id is not None else None
         self.registry = create_registry(str(self.workspace_root), self.subagent_fleet)
         # Optional threading.Event used to abort a running bash command as soon
         # as the user interrupts the turn (Stop button).
@@ -45,6 +50,10 @@ class ToolBridge:
         self.cancel_event = cancel_event
         if self.subagent_fleet is not None:
             self.subagent_fleet.set_cancel_event(cancel_event)
+
+    def set_scheduler_context(self, owner_id: str, target_id: str | None = None) -> None:
+        self.scheduler_owner_id = owner_id or "default"
+        self.scheduler_target_id = str(target_id) if target_id is not None else None
 
     def set_subagent_authorizer(self, callback) -> None:
         if self.subagent_fleet is not None:
@@ -73,7 +82,8 @@ class ToolBridge:
         return resolve_path(raw)
 
     def execute_tool(self, tool_name: str, parameters: Dict[str, Any]):
-        yield from self._execute(tool_name, parameters)
+        with scheduler_context(self.scheduler_owner_id, self.scheduler_target_id):
+            yield from self._execute(tool_name, parameters)
 
     def _execute(self, tool_name: str, parameters: Dict[str, Any]):
         try:
@@ -199,7 +209,10 @@ class ToolBridge:
                 yield final
                 return
 
-            result = reg.handler(**parameters)
+            if tool_name == "wait":
+                result = reg.handler(**parameters, cancel_event=self.cancel_event)
+            else:
+                result = reg.handler(**parameters)
 
             if isinstance(result, dict):
                 yield result
