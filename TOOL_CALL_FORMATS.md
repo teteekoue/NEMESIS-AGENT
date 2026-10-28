@@ -36,8 +36,9 @@ verified. Never use a heredoc inside a `bash` call.
 `<|DSML|>`, `<DSML>`, `<tool_call>`, `<function=...>` and `<parameter=...>` are
 forbidden. A strict parser response with `protocol_error` means **nothing was executed**:
 the loop sends the error back as a correlated `FEEDBACK` block (`[call #N — …]`) and asks
-the model to re-emit valid JSON or split the call. After three consecutive protocol
-errors the turn stops.
+the model to re-emit valid JSON or split the call. Protocol errors do not impose a
+retry or turn limit: the loop continues until the model completes, the user interrupts,
+or the provider fails.
 
 ## Canonical Format
 

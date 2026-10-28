@@ -193,9 +193,9 @@ def test_web_loop_refuses_dsml_and_recovers(tmp_path, monkeypatch):
     assert "DSML" in provider.calls[1]["message"]
 
 
-def test_web_loop_stops_after_three_invalid_calls(tmp_path, monkeypatch):
+def test_web_loop_continues_after_more_than_three_invalid_calls(tmp_path, monkeypatch):
     dsml = '<|DSML|>{"tool": "bash", "parameters": {"command": "ls"}}'
-    provider = ScriptedProvider([dsml, dsml, dsml, _call("bash", command="echo OK")])
+    provider = ScriptedProvider([dsml, dsml, dsml, dsml, _call("bash", command="echo OK")])
     monkeypatch.setattr(runner_module, "create_provider", lambda config: provider)
     monkeypatch.setattr(
         runner_module, "create_executor_from_config",
@@ -211,8 +211,8 @@ def test_web_loop_stops_after_three_invalid_calls(tmp_path, monkeypatch):
     finally:
         loop.close()
 
-    assert tool_count == 0
-    assert len(provider.calls) == 3
+    assert tool_count == 1
+    assert len(provider.calls) == 6  # 4 erreurs + exécution valide + réponse finale
 
 
 # ---------------------------------------------------------------------------

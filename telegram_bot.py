@@ -1042,7 +1042,6 @@ class NemesisTelegramBot:
             iteration = 0
             last_ai_text = ""  # Stocke le dernier message de l'IA
             feedback_seq = 0
-            protocol_errors = 0
 
             # No iteration ceiling: the loop ends when the model stops calling
             # tools, when the provider fails, or when the user interrupts.
@@ -1081,17 +1080,9 @@ class NemesisTelegramBot:
                 if protocol_error:
                     from src.core.agent_tools import protocol_error_feedback
 
-                    protocol_errors += 1
                     feedback_seq += 1
                     current_input = protocol_error_feedback(protocol_error, feedback_seq)
                     current_role = "tool_result"
-                    if protocol_errors >= 3:
-                        await self._cleanup_thinking_message(context, chat_id, status_msg)
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text="[ERROR] Trop d'appels d'outils invalides. Tour interrompu.",
-                        )
-                        return
                     continue
 
                 # Extraire le texte de l'IA (filtrer les blocs JSON d'appels d'outils)
@@ -1137,7 +1128,6 @@ class NemesisTelegramBot:
 
                 from src.core.agent_tools import build_feedback_message
 
-                protocol_errors = 0
                 feedback_seq += 1
                 current_input = build_feedback_message(feedback_parts, feedback_seq)
                 current_role = "tool_result"

@@ -470,7 +470,6 @@ class NemesisApp:
         iteration = 0
         last_response_hash = None
         feedback_seq = 0
-        protocol_errors = 0
 
         # No iteration ceiling: an autonomous agent stops only when the model
         # produces no more tool call, when the user interrupts, or on a
@@ -531,17 +530,13 @@ class NemesisApp:
             ):
                 from src.core.agent_tools import protocol_error_feedback
 
-                protocol_errors += 1
                 feedback_seq += 1
                 self.console.print(
-                    f"[yellow] Appel d'outil invalide ou tronqué ({protocol_errors}) : rien n'a été exécuté.[/yellow]"
+                    "[yellow] Appel d'outil invalide ou tronqué : rien n'a été exécuté.[/yellow]"
                 )
                 current_input = protocol_error_feedback(protocol_error, feedback_seq)
                 current_role = "tool_result"
                 last_response_hash = hash(raw_response.strip())
-                if protocol_errors >= 3:
-                    self.console.print("[error] Trop d'appels d'outils invalides consécutifs.[/error]")
-                    break
                 continue
 
             native_calls = result.get("tool_calls") or []
@@ -702,7 +697,6 @@ class NemesisApp:
 
             from src.core.agent_tools import build_feedback_message
 
-            protocol_errors = 0
             feedback_seq += 1
             current_input = build_feedback_message(batch_feedback, feedback_seq)
             current_role = "tool_result"
