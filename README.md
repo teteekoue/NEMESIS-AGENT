@@ -296,7 +296,7 @@ reste le cas connu où l'upload peut échouer côté page web).
 
 - **Mémoire** — blocs durables réinjectés dans le prompt système, partagés entre les trois surfaces. Détails : [docs/MEMORY.md](docs/MEMORY.md).
 - **GitHub** — collez un PAT dans l'onglet GitHub : NEMESIS crée un serveur MCP (`npx -y @modelcontextprotocol/server-github`) et expose les outils GitHub sans alourdir le registre principal. Détails : [docs/GITHUB.md](docs/GITHUB.md).
-- **Telegram** — token configurable depuis le Web ; même moteur et même mémoire. Les planifications peuvent réveiller l'agent à l'échéance ; les réponses finales Markdown sont converties en texte brut structuré. Commandes : `/start`, `/help`, `/tools`, `/new`, `/clear`. Raccourcis : `web_search:requête`, `web_fetch:url`, `bash:commande`, `read:fichier`.
+- **Telegram** — token configurable depuis le Web ; même moteur et même mémoire. Documents et médias joints sont téléchargés dans le workspace (ou dans `/tmp` si celui-ci n'existe pas), puis leur chemin est transmis au modèle; les images restent des pièces jointes multimodales data URL. L'outil Telegram `send_file_to_user` permet à l'agent de renvoyer un livrable dans le chat après sa création et sa vérification. Les planifications peuvent réveiller l'agent à l'échéance ; les réponses finales Markdown sont converties en texte brut structuré. Commandes : `/start`, `/help`, `/tools`, `/new`, `/clear`. Raccourcis : `web_search:requête`, `web_fetch:url`, `bash:commande`, `read:fichier`.
 - **Planification** — `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` et `wait` sont disponibles dans les trois interfaces. Les tâches ponctuelles sont stockées dans SQLite et reprises au prochain démarrage ; voir [docs/SCHEDULING.md](docs/SCHEDULING.md).
 
 ---
