@@ -17,8 +17,9 @@ class _TelegramDownload:
 
 
 class _FakeBot:
-    def __init__(self, content: bytes = b"attached text"):
+    def __init__(self, content: bytes = b"attached text", send_document_error: str | None = None):
         self.content = content
+        self.send_document_error = send_document_error
         self.sent_documents = []
         self.sent_messages = []
 
@@ -26,6 +27,8 @@ class _FakeBot:
         return _TelegramDownload(self.content)
 
     async def send_document(self, **kwargs):
+        if self.send_document_error:
+            raise RuntimeError(self.send_document_error)
         document = kwargs["document"]
         self.sent_documents.append({**kwargs, "content": document.read()})
 
@@ -192,3 +195,84 @@ def test_image_uploads_are_saved_as_files_and_passed_as_paths_for_data_url_conve
     prompt = bot._prepend_attachment_instruction("Décris l'image.", files)
     assert "multimodal" in prompt
     assert "89504e" not in prompt
+
+
+class _AgentProvider:
+    supports_images = False
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def send_message(self, message, role="user", **kwargs):
+        self.calls.append({"message": message, "role": role, **kwargs})
+        return {"success": True, "response": self.responses.pop(0)}
+
+
+@pytest.mark.parametrize(
+    ("send_document_error", "expected_success"),
+    [(None, True), ("Telegram delivery failed", False)],
+)
+def test_agent_receives_send_file_delivery_feedback(
+    telegram_bot, tmp_path, send_document_error, expected_success
+):
+    import json
+
+    from action_parser import ActionParser
+    from src.core.tool_bridge import ToolBridge
+
+    artifact = tmp_path / "agent-created.txt"
+    artifact.write_text("artifact contents", encoding="utf-8")
+    tool_call = json.dumps(
+        {
+            "tool": "send_file_to_user",
+            "parameters": {"path": str(artifact), "caption": "Livrable"},
+        },
+        ensure_ascii=False,
+    )
+    provider = _AgentProvider(
+        [f"```json\n{tool_call}\n```", "Le résultat de la livraison est enregistré."]
+    )
+    bridge = ToolBridge(workspace=str(tmp_path), enable_subagents=False)
+    bot = telegram_bot.NemesisTelegramBot.__new__(telegram_bot.NemesisTelegramBot)
+    bot.workspace = str(tmp_path)
+    bot.executor = bridge
+    bot.registry = bridge.registry
+    bot._init_nemesis()
+    bot.parser = ActionParser(extra_valid_tools={"send_file_to_user"}, strict=True)
+    bot.providers = {88: provider}
+    bot.prompt_system_sent = {88: True}
+    bot._feedback_sequences = {}
+    bot._get_chat_config = lambda _chat_id: {"nemapi": {"model": "stub-local"}}
+    bot._get_provider = lambda _chat_id: provider
+    bot._format_ai_response = lambda outputs, _provider, _model: "\n".join(outputs)
+    bot._cleanup_thinking_message = lambda *_args: asyncio.sleep(0)
+
+    async def send_long(_context, _chat_id, _text):
+        return None
+
+    bot._send_long_message = send_long
+    fake_bot = _FakeBot(send_document_error=send_document_error)
+    context = SimpleNamespace(bot=fake_bot)
+    update = SimpleNamespace()
+
+    try:
+        asyncio.run(bot._process_ai_request(update, context, "Envoie-moi le fichier.", 88))
+
+        assert len(provider.calls) == 2
+        feedback = provider.calls[1]["message"]
+        assert feedback.startswith("FEEDBACK:\n[call #1")
+        assert "send_file_to_user" in feedback
+        assert f"Success: {expected_success}" in feedback
+        if expected_success:
+            assert artifact.name in feedback
+            assert len(fake_bot.sent_documents) == 1
+            sent = fake_bot.sent_documents[0]
+            assert sent["chat_id"] == 88
+            assert sent["filename"] == artifact.name
+            assert sent["content"] == b"artifact contents"
+        else:
+            assert "Telegram delivery failed" in feedback
+            assert not fake_bot.sent_documents
+    finally:
+        bridge.close()

@@ -123,7 +123,7 @@ NEMESIS n'est plus confiné à un « workspace » :
 
 ## Autorisation
 
-Avant chaque outil sensible :
+Le CLI conserve ses confirmations interactives pour les outils sensibles :
 
 | Touche | Effet |
 | --- | --- |
@@ -131,7 +131,10 @@ Avant chaque outil sensible :
 | `n` | Refuser |
 | `a` | Autoriser pour toute la session |
 
-Mode « toutes autorisations » : agent autonome (défaut du bot Telegram).
+Le bot Telegram, lui, exécute directement tous les outils, y compris ceux classés
+sensibles, sans demande ni bouton de confirmation. `/approval` n'y modifie aucune
+politique; la livraison de `send_file_to_user` est exécutée via Telegram, puis son
+résultat réel (succès ou échec) est retourné à l'agent.
 
 ---
 
@@ -149,7 +152,7 @@ Mode « toutes autorisations » : agent autonome (défaut du bot Telegram).
 | `/history` `/stats` `/clear` `/exit` | Historique, stats, écran, quitter |
 | `/sessions` | Liste, crée, reprend ou supprime les conversations partagées avec le Web |
 | `/memory` | Consulte et gère la mémoire partagée avec le Web et Telegram |
-| `/approval` | Choisit le mode de confirmation des outils (`confirm` ou `all`) |
+| `/approval` | Telegram : indique que tous les outils s'exécutent directement, sans confirmation |
 | `/skills` | Consulte, active ou désactive les compétences |
 | `/subagents` | Consulte et configure les profils et limites des sous-agents |
 | `/files` | Explore n’importe quel dossier du système |

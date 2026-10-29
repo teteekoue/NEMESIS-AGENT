@@ -67,7 +67,6 @@ PROVIDER_LABELS = {
 
 # Providers qui gerent leur contexte cote serveur
 SERVER_MANAGED_PROVIDERS = ["nemapi"]
-TOOL_CONFIRMATION_PENDING = "__tool_confirmation_pending__"
 MAX_TELEGRAM_DOWNLOAD_BYTES = 20 * 1024 * 1024
 MAX_TELEGRAM_SEND_BYTES = 50 * 1024 * 1024
 TELEGRAM_SYSTEM_PROMPT_EXTENSION = """
@@ -80,7 +79,6 @@ TELEGRAM_SYSTEM_PROMPT_EXTENSION = """
 # Etats de conversation
 AWAITING_PROVIDER_CONFIG = 1
 AWAITING_MODEL_SELECTION = 2
-AWAITING_CONFIRMATION = 3
 AWAITING_BRIDGE_HOST = 4
 AWAITING_NEMAPI_HOST = 5
 
@@ -119,7 +117,7 @@ def load_chat_config(chat_id: int) -> Dict[str, Any]:
     default_config = {
         "provider": {"type": "nemapi"},
         "nemapi": {"host": "127.0.0.1", "port": 8080, "model": ""},
-        "security": {"workspace": str(Path.cwd()), "approval_mode": "confirm"},
+        "security": {"workspace": str(Path.cwd())},
     }
     
     if not config_path.exists():
@@ -143,9 +141,6 @@ def load_chat_config(chat_id: int) -> Dict[str, Any]:
                 if provider.get(key) is not None and nemapi.get(key) in (None, ""):
                     nemapi[key] = provider[key]
             security = loaded.get("security") if isinstance(loaded.get("security"), dict) else {}
-            approval_mode = str(security.get("approval_mode") or "confirm").lower()
-            if approval_mode not in {"confirm", "all"}:
-                approval_mode = "confirm"
             normalized = {
                 "provider": {"type": "nemapi"},
                 "nemapi": {
@@ -157,11 +152,6 @@ def load_chat_config(chat_id: int) -> Dict[str, Any]:
                     "workspace": str(
                         security.get("workspace") or default_config["security"]["workspace"]
                     ),
-                    "approval_mode": approval_mode,
-                    "authorized_tools": [
-                        str(name) for name in security.get("authorized_tools", [])
-                        if isinstance(name, str) and name
-                    ] if isinstance(security.get("authorized_tools", []), list) else [],
                 },
             }
             if loaded.get("session_id"):
@@ -210,13 +200,12 @@ class NemesisTelegramBot:
         self.app: Optional[Application] = None
         self.registry = None
         self.executor = ToolBridge(workspace=self.workspace, scheduler_owner_id="telegram")
-        self.parser = ActionParser(strict=True)
+        self.parser = ActionParser(extra_valid_tools={"send_file_to_user"}, strict=True)
         self._event_loop = None
         from src.core.scheduler import get_scheduler
 
         get_scheduler().register_handler("telegram:*", self._run_scheduled_task)
         self.providers: Dict[int, Any] = {}
-        self._session_authorized_tools: Dict[int, set] = {}
         self._feedback_sequences: Dict[int, int] = {}
         self._chat_message_counts: Dict[int, int] = {}
         self._started_at = time.time()
@@ -225,8 +214,6 @@ class NemesisTelegramBot:
         self.chat_states: Dict[int, int] = {}
         
         # Donnees temporaires
-        self.pending_config: Dict[int, Dict[str, Any]] = {}
-        self.pending_actions: Dict[int, Dict[str, Any]] = {}
         
         # Suivi du prompt système envoyé par chat
         self.prompt_system_sent: Dict[int, bool] = {}
@@ -326,29 +313,6 @@ class NemesisTelegramBot:
             logger.error(f"Erreur creation provider pour chat {chat_id}: {e}")
             return None
 
-    def _authorized_tools_for_chat(self, chat_id: int, config: Optional[Dict[str, Any]] = None) -> set:
-        config = config or self._get_chat_config(chat_id)
-        persisted = config.get("security", {}).get("authorized_tools", [])
-        return set(self._session_authorized_tools.get(chat_id, set())) | {
-            name for name in persisted if isinstance(name, str) and name
-        }
-
-    def _grant_session_tool(self, chat_id: int, tool_name: str) -> None:
-        self._session_authorized_tools.setdefault(chat_id, set()).add(tool_name)
-        config = self._get_chat_config(chat_id)
-        security = config.setdefault("security", {})
-        authorized = set(security.get("authorized_tools", []))
-        authorized.add(tool_name)
-        security["authorized_tools"] = sorted(authorized)
-        self._save_chat_config(chat_id, config)
-
-    def _clear_session_authorizations(self, chat_id: int, config: Optional[Dict[str, Any]] = None) -> None:
-        self._session_authorized_tools.pop(chat_id, None)
-        config = config or self._get_chat_config(chat_id)
-        security = config.setdefault("security", {})
-        security["authorized_tools"] = []
-        self._save_chat_config(chat_id, config)
-
     def _needs_provider_config(self, chat_id: int) -> bool:
         """Verifie si le provider a besoin d'etre configure."""
         config = self._get_chat_config(chat_id)
@@ -375,7 +339,7 @@ class NemesisTelegramBot:
         name = getattr(user, "first_name", None) or ""
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"Bonjour {name} ! NEMESIS est prêt. Configurez NEMAPI avec /provider, puis le modèle avec /model. Les appels sensibles demandent confirmation par défaut.",
+            text=f"Bonjour {name} ! NEMESIS est prêt. Configurez NEMAPI avec /provider, puis le modèle avec /model. Tous les outils, y compris les opérations sensibles, sont exécutés sans confirmation.",
         )
         await self.help_command(update, context)
 
@@ -419,7 +383,7 @@ class NemesisTelegramBot:
         lines.extend([
             "",
             "Commandes propres au bot : /provider, /new, /start.",
-            "Pour les opérations interactives/sensibles (ex. configurer des secrets), utilisez le CLI.",
+            "Les outils sont exécutés directement, sans demande de confirmation.",
         ])
         await self._send_long_message(context, chat_id, "\n".join(lines))
 
@@ -466,7 +430,6 @@ class NemesisTelegramBot:
         if command_name == "status":
             provider = self._get_provider(chat_id)
             security = config.get("security", {})
-            authorized = sorted(self._authorized_tools_for_chat(chat_id, config))
             lines = [
                 "État de la session Telegram",
                 f"Connexion : {'provider créé' if provider else 'provider indisponible (non testé)'}",
@@ -474,32 +437,21 @@ class NemesisTelegramBot:
                 f"Modèle : {config.get('nemapi', {}).get('model') or 'non sélectionné'}",
                 f"Endpoint : {config.get('nemapi', {}).get('host', '127.0.0.1')}:{config.get('nemapi', {}).get('port', 8080)}",
                 f"Workspace : {security.get('workspace', self.workspace)}",
-                f"Autorisation : {security.get('approval_mode', 'confirm')}",
-                f"Outils autorisés pour la session : {', '.join(authorized) if authorized else 'aucun'}",
+                "Autorisations : désactivées (exécution directe de tous les outils)",
             ]
             await self._send_long_message(context, chat_id, "\n".join(lines))
             return
         if command_name == "stats":
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"Statistiques Telegram\nMessages reçus : {self._chat_message_counts.get(chat_id, 0)}\nOutils autorisés pour cette session : {len(self._session_authorized_tools.get(chat_id, set()))}",
+                text=f"Statistiques Telegram\nMessages reçus : {self._chat_message_counts.get(chat_id, 0)}",
             )
             return
         if command_name == "approval":
-            mode = args[0].lower() if args else ""
-            current = config.setdefault("security", {}).get("approval_mode", "confirm")
-            if not mode:
-                await context.bot.send_message(chat_id=chat_id, text=f"Mode d'autorisation : {current}. Usage : /approval confirm|all")
-                return
-            if mode not in {"confirm", "all"}:
-                await context.bot.send_message(chat_id=chat_id, text="Choisissez confirm ou all.")
-                return
-            config["security"]["approval_mode"] = mode
-            if mode == "confirm":
-                config["security"]["authorized_tools"] = []
-                self._session_authorized_tools.pop(chat_id, None)
-            self._save_chat_config(chat_id, config)
-            await context.bot.send_message(chat_id=chat_id, text=f"Mode d'autorisation enregistré : {mode}.")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Les confirmations d'outils sont désactivées : tous les outils s'exécutent directement.",
+            )
             return
         if command_name in {"sessions", "session"}:
             from web.backend import sessions as session_store
@@ -517,7 +469,6 @@ class NemesisTelegramBot:
                 if provider and hasattr(provider, "configure_session"):
                     provider.configure_session(session["id"], initialized=False)
                 self.prompt_system_sent[chat_id] = False
-                self._clear_session_authorizations(chat_id, config)
                 await context.bot.send_message(chat_id=chat_id, text=f"Nouvelle session créée : {session['id']} — {title}")
                 return
             if operation == "open" and len(args) > 1:
@@ -532,7 +483,6 @@ class NemesisTelegramBot:
                 if provider and hasattr(provider, "configure_session"):
                     provider.configure_session(session["id"], initialized=initialized)
                 self.prompt_system_sent[chat_id] = initialized
-                self._clear_session_authorizations(chat_id, config)
                 await context.bot.send_message(chat_id=chat_id, text=f"Session ouverte : {session['id']} — {session.get('title', '')}")
                 return
             if operation == "delete" and len(args) > 1:
@@ -546,7 +496,6 @@ class NemesisTelegramBot:
                     config.pop("session_id", None)
                     self._save_chat_config(chat_id, config)
                     self.prompt_system_sent[chat_id] = False
-                    self._session_authorized_tools.pop(chat_id, None)
                 await context.bot.send_message(chat_id=chat_id, text="Session archivée." if deleted else "Session introuvable.")
                 return
             if operation != "list":
@@ -828,7 +777,6 @@ class NemesisTelegramBot:
             session["telegram_chat_id"] = str(chat_id)
             save_session(session)
             config["session_id"] = session["id"]
-            config.setdefault("security", {})["authorized_tools"] = []
             self._save_chat_config(chat_id, config)
         except Exception as exc:
             logger.warning("Impossible de créer une session Telegram persistante: %s", exc)
@@ -837,9 +785,7 @@ class NemesisTelegramBot:
             if session and hasattr(provider, "configure_session"):
                 provider.configure_session(session["id"], initialized=False)
         
-        # Une nouvelle conversation est un nouveau périmètre d'autorisation.
         self.prompt_system_sent[chat_id] = False
-        self._clear_session_authorizations(chat_id, config)
         
         await context.bot.send_message(
             chat_id=chat_id,
@@ -858,10 +804,8 @@ class NemesisTelegramBot:
                 provider.configure_session(None, initialized=False)
         config = self._get_chat_config(chat_id)
         config.pop("session_id", None)
-        config.setdefault("security", {})["authorized_tools"] = []
         self._save_chat_config(chat_id, config)
         self.prompt_system_sent[chat_id] = False
-        self._session_authorized_tools.pop(chat_id, None)
         
         await context.bot.send_message(
             chat_id=chat_id,
@@ -1080,8 +1024,7 @@ class NemesisTelegramBot:
             # Vérifier si c'est un outil direct
             tool_result = await self._handle_message_with_tools(message_text, chat_id, context, update)
             if tool_result is not None:
-                if tool_result != TOOL_CONFIRMATION_PENDING:
-                    await context.bot.send_message(chat_id=chat_id, text=tool_result)
+                await context.bot.send_message(chat_id=chat_id, text=tool_result)
                 return
         
         # Vérifier si le provider est configuré
@@ -1105,8 +1048,7 @@ class NemesisTelegramBot:
         # Verifier si c'est un appel d'outil direct
         tool_result = await self._handle_message_with_tools(message_text, chat_id, context, update)
         if tool_result is not None:
-            if tool_result != TOOL_CONFIRMATION_PENDING:
-                await context.bot.send_message(chat_id=chat_id, text=tool_result)
+            await context.bot.send_message(chat_id=chat_id, text=tool_result)
             return
         
         # L'instruction sur les fichiers est préfixée au message utilisateur; les
@@ -1118,25 +1060,15 @@ class NemesisTelegramBot:
     # OUTILS
     # =============================================================================
 
-    async def _execute_direct_tool_or_confirm(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    async def _execute_direct_tool(
+        self, context: ContextTypes.DEFAULT_TYPE,
         tool_name: str, params: Dict[str, Any], chat_id: int,
     ) -> str:
+        """Execute a direct Telegram tool request without an approval prompt."""
         if not isinstance(tool_name, str) or not isinstance(params, dict):
             return "Appel d'outil invalide : le nom doit être une chaîne et les paramètres un objet."
         aliases = {"read": "read_file", "write": "write_file", "append_file": "append", "replace": "edit"}
         canonical_name = aliases.get(tool_name, tool_name)
-        config = self._get_chat_config(chat_id)
-        risk = self.executor.risk_for(canonical_name, params) if hasattr(self.executor, "risk_for") else "medium"
-        approval_mode = config.get("security", {}).get("approval_mode", "confirm")
-        if (
-            risk == "high"
-            and approval_mode != "all"
-            and canonical_name not in self._authorized_tools_for_chat(chat_id, config)
-        ):
-            await self._ask_for_confirmation(update, context, canonical_name, params)
-            self.pending_actions[chat_id]["source"] = "direct"
-            return TOOL_CONFIRMATION_PENDING
         result = await self._execute_tool(canonical_name, params, chat_id, context)
         return self._format_tool_result_for_display(result)
 
@@ -1161,9 +1093,7 @@ class NemesisTelegramBot:
         for prefix, (tool_name, parser) in tool_prefixes.items():
             if message_stripped.lower().startswith(prefix):
                 params = parser(message_stripped)
-                if update is None:
-                    return None
-                return await self._execute_direct_tool_or_confirm(update, context, tool_name, params, chat_id)
+                return await self._execute_direct_tool(context, tool_name, params, chat_id)
         
         # Détection des appels d'outils au format JSON avec code fence
         # Format: ```
@@ -1182,9 +1112,7 @@ class NemesisTelegramBot:
                 if 'tool' in tool_call and 'parameters' in tool_call:
                     tool_name = tool_call['tool']
                     params = tool_call['parameters']
-                    if update is None:
-                        return None
-                    return await self._execute_direct_tool_or_confirm(update, context, tool_name, params, chat_id)
+                    return await self._execute_direct_tool(context, tool_name, params, chat_id)
             except json.JSONDecodeError:
                 continue
         
@@ -1193,10 +1121,8 @@ class NemesisTelegramBot:
             try:
                 tool_call = json.loads(message_stripped)
                 if 'tool' in tool_call and 'parameters' in tool_call:
-                    if update is None:
-                        return None
-                    return await self._execute_direct_tool_or_confirm(
-                        update, context, tool_call['tool'], tool_call['parameters'], chat_id
+                    return await self._execute_direct_tool(
+                        context, tool_call['tool'], tool_call['parameters'], chat_id
                     )
             except json.JSONDecodeError:
                 pass
@@ -1216,131 +1142,6 @@ class NemesisTelegramBot:
         url = parts[0].strip()
         fmt = parts[1].strip() if len(parts) > 1 else 'markdown'
         return {'url': url, 'format': fmt}
-
-    def _is_sensitive_tool(self, tool_name: str, params: Optional[Dict[str, Any]] = None) -> bool:
-        """Retourne si l'exécuteur classe cet appel comme à risque élevé."""
-        if not self.executor or not hasattr(self.executor, "risk_for"):
-            return False
-        return self.executor.risk_for(tool_name, params or {}) == "high"
-    
-    def _extract_tool_name(self, message: str) -> Optional[str]:
-        """Extrait le nom de l'outil depuis un message."""
-        # Vérifier les prefixes d'outils directs
-        tool_prefixes = ['bash:', 'read:', 'write:', 'grep:', 'list:', 'search:', 'fetch:']
-        for prefix in tool_prefixes:
-            if message.lower().startswith(prefix):
-                return prefix[:-1]  # retourne 'bash', 'read', etc.
-        
-        # Vérifier le format JSON
-        import re
-        json_pattern = r'\{\s*"tool"\s*:\s*"([^"]+)"'
-        match = re.search(json_pattern, message)
-        if match:
-            return match.group(1)
-        
-        # Vérifier les blocs JSON dans les code fences
-        json_block_pattern = r'```(?:)?\s*\{\s*"tool"\s*:\s*"([^"]+)"'
-        match = re.search(json_block_pattern, message, re.DOTALL)
-        if match:
-            return match.group(1)
-        
-        return None
-    
-    def _extract_tool_params(self, message: str, tool_name: str) -> Dict[str, Any]:
-        """Extrait les paramètres d'un outil depuis un message."""
-        params = {}
-        
-        # Pour les prefixes directs
-        if message.lower().startswith(f"{tool_name}:"):
-            content = message[len(tool_name)+1:].strip()
-            if tool_name == 'bash':
-                params['command'] = content
-            elif tool_name == 'read':
-                params['path'] = content
-            elif tool_name == 'write':
-                parts = content.split('|', 1)
-                if len(parts) >= 2:
-                    params['file_path'] = parts[0].strip()
-                    params['content'] = parts[1].strip()
-            elif tool_name == 'grep':
-                params['pattern'] = content
-            elif tool_name == 'list':
-                params['path'] = content or None
-            elif tool_name == 'search':
-                params['query'] = content
-            elif tool_name == 'fetch':
-                parts = content.split('|', 1)
-                params['url'] = parts[0].strip()
-                params['format'] = parts[1].strip() if len(parts) > 1 else 'markdown'
-            return params
-        
-        # Pour le format 
-        import re
-        json_pattern = r'\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*({[^}]+)\s*\}'
-        match = re.search(json_pattern, message, re.DOTALL)
-        if match:
-            try:
-                param_str = match.group(1)
-                # Remplacer les guillemets simples par des guillemets doubles pour le parsing
-                param_str = re.sub(r"'([^']+)'", r'"\1"', param_str)
-                params = json.loads(param_str)
-                return params
-            except json.JSONDecodeError:
-                pass
-        
-        # Pour les blocs  dans les code fences
-        json_block_pattern = r'```(?:json)?\s*\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*({[^}]+)\s*\}\s*```'
-        match = re.search(json_block_pattern, message, re.DOTALL)
-        if match:
-            try:
-                param_str = match.group(1)
-                param_str = re.sub(r"'([^']+)'", r'"\1"', param_str)
-                params = json.loads(param_str)
-                return params
-            except json.JSONDecodeError:
-                pass
-        
-        return params
-
-    async def _ask_for_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE, tool_name: str, params: Dict[str, Any]):
-        """Demande confirmation pour un outil avec boutons y/n/a (comme dans CLI)."""
-        chat_id = update.effective_chat.id
-        
-        # Stocker les informations pour le callback
-        self.pending_actions[chat_id] = {
-            "tool_name": tool_name,
-            "params": params,
-            "action_type": tool_name,
-            "action_content": params,
-            "timestamp": time.time()
-        }
-        
-        # Boutons comme dans le CLI : y, n, a
-        keyboard = [
-            [
-                InlineKeyboardButton("Oui (y)", callback_data="tool_yes"),
-                InlineKeyboardButton("Non (n)", callback_data="tool_no"),
-                InlineKeyboardButton("Toujours (a)", callback_data="tool_always")
-            ]
-        ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        params_str = "\n".join([f"  {k}: {v}" for k, v in params.items()]) if params else "(aucun paramètre)"
-        
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                "Confirmation requise\n\n"
-                f"Outil : {tool_name}\n"
-                f"Paramètres :\n{params_str}\n\n"
-                "Autoriser cette action ?\n"
-                "• Oui (y) — une seule fois\n"
-                "• Non (n) — refuser\n"
-                "• Toujours (a) — autoriser cet outil pour cette session"
-            ),
-            reply_markup=reply_markup,
-        )
 
     async def _execute_tool(self, tool_name: str, parameters: Dict[str, Any],
                           chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
@@ -1711,13 +1512,6 @@ class NemesisTelegramBot:
                 for action_item in actions:
                     act_type = action_item.get('type', '')
                     act_content = action_item.get('content', {})
-                    risk = self.executor.risk_for(act_type, act_content) if hasattr(self.executor, "risk_for") else "medium"
-                    authorized = self._authorized_tools_for_chat(chat_id, config)
-                    approval_mode = config.get("security", {}).get("approval_mode", "confirm")
-                    if risk == "high" and approval_mode != "all" and act_type not in authorized:
-                        await self._ask_for_confirmation(update, context, act_type, act_content)
-                        await self._cleanup_thinking_message(context, chat_id, status_msg)
-                        return
                     tool_result = await self._execute_tool(act_type, act_content, chat_id, context)
                     from src.core.agent_tools import format_tool_feedback
                     from src.core.image_attachments import collect_result_images
@@ -1893,142 +1687,6 @@ class NemesisTelegramBot:
     # GESTION DES CALLBACKS
     # =============================================================================
 
-    async def _run_confirmed_tool(
-        self,
-        update: Update,
-        context: ContextTypes.DEFAULT_TYPE,
-        chat_id: int,
-        *,
-        always: bool,
-    ) -> None:
-        """Execute an approved action and resume the agent's tool-result loop."""
-        query = update.callback_query
-        pending = self.pending_actions.pop(chat_id, None)
-        if not pending:
-            await query.edit_message_text("Aucune action en attente.")
-            return
-
-        tool_name = pending.get("action_type") or pending.get("tool_name", "")
-        params = pending.get("action_content") or pending.get("params") or {}
-        if always:
-            # Grant the session permission before execution: the permission is
-            # independent of whether the requested operation itself succeeds.
-            self._grant_session_tool(chat_id, tool_name)
-
-        try:
-            tool_result = await self._execute_tool(tool_name, params, chat_id, context)
-            from src.core.agent_tools import build_feedback_message, format_tool_feedback
-
-            if not isinstance(tool_result, dict):
-                tool_result = {"success": True, "stdout": str(tool_result)}
-            if pending.get("source") == "direct":
-                display = self._format_tool_result_for_display(tool_result)
-                if display:
-                    await self._send_long_message(context, chat_id, display)
-                permission = f"Outil « {tool_name} » autorisé pour cette session" if always else f"Action « {tool_name} » autorisée une fois"
-                outcome = "exécuté" if tool_result.get("success", True) else "a échoué"
-                await query.edit_message_text(f"{permission}; l'outil {outcome}.")
-                return
-            feedback_seq = self._feedback_sequences.get(chat_id, 0) + 1
-            self._feedback_sequences[chat_id] = feedback_seq
-            current_input = build_feedback_message(
-                [format_tool_feedback(tool_name, tool_result)], feedback_seq
-            )
-            provider = self._get_provider(chat_id)
-            if provider is None:
-                raise RuntimeError("Provider non disponible pour reprendre la conversation.")
-
-            last_ai_text = ""
-            while True:
-                from src.core.image_attachments import send_message_with_images
-
-                response = send_message_with_images(
-                    provider, current_input, role="tool_result", images=[], system_prefix=""
-                )
-                if not isinstance(response, dict) or not response.get("success"):
-                    raise RuntimeError(
-                        (response or {}).get("error", "Réponse invalide du provider")
-                        if isinstance(response, dict) else "Réponse invalide du provider"
-                    )
-
-                parsed = self.parser.parse(response.get("response", ""))
-                protocol_error = parsed.get("protocol_error")
-                if protocol_error:
-                    from src.core.agent_tools import protocol_error_feedback
-
-                    feedback_seq += 1
-                    self._feedback_sequences[chat_id] = feedback_seq
-                    current_input = protocol_error_feedback(protocol_error, feedback_seq)
-                    continue
-
-                display_text = parsed.get("text", "")
-                if display_text and not display_text.startswith("FEEDBACK:"):
-                    import re
-
-                    clean_text = re.sub(r'```\s*\{[^`]*\}\s*```', '', display_text, flags=re.DOTALL)
-                    clean_text = re.sub(r'\{\s*"tool"\s*:.*?\}', '', clean_text, flags=re.DOTALL)
-                    if clean_text.strip():
-                        last_ai_text = clean_text.strip()
-
-                actions = parsed.get("actions") or ([parsed["action"]] if parsed.get("action") else [])
-                if not actions:
-                    break
-
-                feedback_parts = []
-                for action in actions:
-                    next_name = action.get("type", "")
-                    next_params = action.get("content", {})
-                    config = self._get_chat_config(chat_id)
-                    mode = config.get("security", {}).get("approval_mode", "confirm")
-                    risk = self.executor.risk_for(next_name, next_params) if hasattr(self.executor, "risk_for") else "medium"
-                    if (
-                        risk == "high"
-                        and mode != "all"
-                        and next_name not in self._authorized_tools_for_chat(chat_id, config)
-                    ):
-                        self.pending_actions[chat_id] = {
-                            "tool_name": next_name,
-                            "params": next_params,
-                            "action_type": next_name,
-                            "action_content": next_params,
-                            "timestamp": time.time(),
-                        }
-                        await self._ask_for_confirmation(update, context, next_name, next_params)
-                        await query.edit_message_text("Action exécutée; une confirmation supplémentaire est requise.")
-                        return
-
-                    next_result = await self._execute_tool(next_name, next_params, chat_id, context)
-                    if not isinstance(next_result, dict):
-                        next_result = {"success": True, "stdout": str(next_result)}
-                    feedback_parts.append(format_tool_feedback(next_name, next_result))
-
-                feedback_seq += 1
-                self._feedback_sequences[chat_id] = feedback_seq
-                current_input = build_feedback_message(feedback_parts, feedback_seq)
-
-            config = self._get_chat_config(chat_id)
-            if last_ai_text:
-                final_text = self._format_ai_response(
-                    [last_ai_text], "nemapi", config.get("nemapi", {}).get("model", "")
-                )
-                if config.get("session_id"):
-                    try:
-                        from web.backend.sessions import append_message
-
-                        append_message(config["session_id"], {"kind": "assistant", "text": last_ai_text})
-                    except Exception as exc:
-                        logger.debug("Impossible d'archiver la réponse Telegram : %s", exc)
-                await self._send_long_message(context, chat_id, final_text)
-            else:
-                await context.bot.send_message(chat_id=chat_id, text="L'outil a été exécuté; aucune réponse finale n'a été fournie.")
-
-            permission = f"Outil « {tool_name} » autorisé pour cette session" if always else f"Action « {tool_name} » autorisée une fois"
-            await query.edit_message_text(f"{permission}; résultat transmis à l'agent.")
-        except Exception as exc:
-            logger.exception("Échec après approbation de l'outil %s", tool_name)
-            permission = f"L'outil « {tool_name} » reste autorisé pour cette session. " if always else ""
-            await query.edit_message_text(f"{permission}L'exécution ou la reprise a échoué : {str(exc)[:700]}")
-
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Gere les callbacks des boutons inline."""
         query = update.callback_query
@@ -2041,7 +1699,6 @@ class NemesisTelegramBot:
         if data == "cancel":
             await query.edit_message_text("[ERROR] Operation annulee.")
             self.chat_states.pop(chat_id, None)
-            self.pending_config.pop(chat_id, None)
         
         elif data.startswith("provider_"):
             provider_type = data[9:]
@@ -2074,48 +1731,12 @@ class NemesisTelegramBot:
             )
             self.chat_states.pop(chat_id, None)
         
-        elif data == "confirm_yes":
-            if chat_id in self.pending_config:
-                pending = self.pending_config[chat_id]
-                message = pending.get("message", "")
-                result = await self._handle_message_with_tools(message, chat_id, context, update)
-                if result and result != TOOL_CONFIRMATION_PENDING:
-                    await context.bot.send_message(chat_id=chat_id, text=result)
-                await query.edit_message_text("[OK] Operation confirmee.")
-                self.pending_config.pop(chat_id, None)
-            else:
-                await query.edit_message_text("[ERROR] Aucune operation en attente.")
-        
-        elif data == "confirm_no":
-            self.pending_config.pop(chat_id, None)
-            await query.edit_message_text("[ERROR] Operation annulee.")
-        
-        elif data == "tool_yes":
-            await self._run_confirmed_tool(update, context, chat_id, always=False)
-        
-        elif data == "tool_no":
-            # Refuser l'outil
-            if chat_id in self.pending_actions:
-                self.pending_actions.pop(chat_id, None)
-                await query.edit_message_text("[ERROR] Exécution de l'outil annulée.")
-            else:
-                await query.edit_message_text("[ERROR] Aucune action en attente.")
-        
-        elif data == "tool_always":
-            await self._run_confirmed_tool(update, context, chat_id, always=True)
-        
-        elif data.startswith("confirm_tool_"):
-            chat_id_from_data = int(data.replace("confirm_tool_", "", 1))
-            await self._run_confirmed_tool(update, context, chat_id_from_data, always=False)
-        
-        elif data.startswith("cancel_tool_"):
-            # Annulation de l'outil
-            chat_id_from_data = int(data.replace("cancel_tool_", ""))
-            if chat_id_from_data in self.pending_actions:
-                self.pending_actions.pop(chat_id_from_data, None)
-                await query.edit_message_text("[ERROR] Exécution de l'outil annulée.")
-            else:
-                await query.edit_message_text("[ERROR] Aucune action en attente.")
+        elif data in {"confirm_yes", "confirm_no", "tool_yes", "tool_no", "tool_always"} or data.startswith(
+            ("confirm_tool_", "cancel_tool_")
+        ):
+            await query.edit_message_text(
+                "Ce bouton n'est plus actif. Envoyez à nouveau votre demande."
+            )
         
         elif data == "history_clear":
             provider = self._get_provider(chat_id)
@@ -2124,10 +1745,8 @@ class NemesisTelegramBot:
                 if hasattr(provider, "configure_session"):
                     provider.configure_session(None, initialized=False)
             config.pop("session_id", None)
-            config.setdefault("security", {})["authorized_tools"] = []
             self._save_chat_config(chat_id, config)
             self.prompt_system_sent[chat_id] = False
-            self._session_authorized_tools.pop(chat_id, None)
             await query.edit_message_text("[CLEAR] Conversation effacee.")
 
 
