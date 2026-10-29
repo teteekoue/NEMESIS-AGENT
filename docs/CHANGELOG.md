@@ -4,6 +4,21 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
 
 ---
 
+## [Non publié] — Exécution Telegram sans confirmation et feedback livraison (29 octobre 2026)
+
+- Supprime les demandes et contrôles d'autorisation du bot Telegram, y compris
+  pour les outils classés sensibles. Les appels directs et ceux initiés par
+  l'agent s'exécutent immédiatement; les anciennes préférences d'autorisation
+  enregistrées sont ignorées. Les confirmations interactives du CLI restent
+  inchangées.
+- `send_file_to_user` retourne désormais au provider le résultat réel de
+  `send_document`, succès comme échec, afin que l'agent puisse confirmer la
+  livraison ou signaler le problème sans inventer de réussite.
+- Ajoute des tests de bout en bout pour l'envoi Telegram et le feedback reçu
+  par l'agent, ainsi que pour l'exécution automatique des outils sensibles.
+
+---
+
 ## [Non publié] — Pièces jointes et livraison de fichiers Telegram (29 octobre 2026)
 
 - Le bot accepte les documents et médias Telegram, les télécharge dans

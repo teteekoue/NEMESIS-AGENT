@@ -381,9 +381,7 @@ def test_telegram_loop_writes_a_long_file_with_append(tmp_path, monkeypatch):
     bot.parser = ActionParser(strict=True)
     bot.providers = {4242: provider}
     bot.prompt_system_sent = {}
-    bot.pending_actions = {}
     bot._feedback_sequences = {}
-    bot._session_authorized_tools = {}
     bot._get_chat_config = lambda chat_id: {"nemapi": {"model": "stub-local"}}
     bot._get_provider = lambda chat_id: provider
     bot._format_ai_response = lambda outputs, provider_type, model: "\n".join(outputs)
@@ -424,9 +422,7 @@ def test_telegram_displays_only_the_final_reply_as_readable_plain_text(tmp_path)
     bot.parser = ActionParser(strict=True)
     bot.providers = {4242: provider}
     bot.prompt_system_sent = {}
-    bot.pending_actions = {}
     bot._feedback_sequences = {}
-    bot._session_authorized_tools = {}
     bot._event_loop = None
     bot._get_chat_config = lambda chat_id: {"nemapi": {"model": "stub-local"}}
     bot._get_provider = lambda chat_id: provider

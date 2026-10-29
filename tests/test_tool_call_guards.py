@@ -87,7 +87,7 @@ def test_telegram_source_uses_generated_prompt_and_native_append():
     assert "build_system_prompt(self.registry)" in source
     assert "'append': 'append_file'" not in source
     assert "'append_file': 'append'" in source
-    assert "ActionParser(strict=True)" in source
+    assert 'ActionParser(extra_valid_tools={"send_file_to_user"}, strict=True)' in source
 
 
 @pytest.mark.parametrize("surface", ["agent.py", "web/backend/agent_runner.py", "telegram_bot.py"])
