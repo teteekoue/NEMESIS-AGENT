@@ -4,6 +4,20 @@ Ce document regroupe l'historique des évolutions, avec un focus sur les récent
 
 ---
 
+## [Non publié] — Pièces jointes et livraison de fichiers Telegram (29 octobre 2026)
+
+- Le bot accepte les documents et médias Telegram, les télécharge dans
+  `.nemesis/telegram_uploads/<chat_id>/` du workspace (ou dans le répertoire
+  temporaire si le workspace n'existe pas), puis préfixe le message utilisateur
+  avec les chemins locaux et les instructions de lecture. Les images reconnues
+  continuent d'être transmises comme data URLs multimodales, sans dump binaire
+  dans le prompt. La limite de téléchargement Bot API (20 Mio) est signalée.
+- Ajoute au seul registre Telegram l'outil à risque élevé `send_file_to_user` :
+  après création et vérification d'un livrable, l'agent peut l'envoyer comme
+  document dans le chat. L'extension du prompt système Telegram exige cet envoi
+  lorsque l'utilisateur demande le fichier; la livraison est confirmée par le
+  résultat réel de `send_document`.
+
 ## [Non publié] — Planification autonome et affichage Telegram lisible (28 octobre 2026)
 
 - Ajout de `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task` et

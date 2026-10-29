@@ -22,6 +22,9 @@ github.yaml
 telegram_bot.yaml
 .env.local
 
+# Telegram attachments downloaded into an active workspace
+.nemesis/telegram_uploads/
+
 # Web UI
 node_modules/
 web/frontend/node_modules/

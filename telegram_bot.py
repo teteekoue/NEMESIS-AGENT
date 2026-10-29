@@ -15,7 +15,10 @@ import sys
 import json
 import logging
 import asyncio
+import re
+import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from types import SimpleNamespace
@@ -65,6 +68,14 @@ PROVIDER_LABELS = {
 # Providers qui gerent leur contexte cote serveur
 SERVER_MANAGED_PROVIDERS = ["nemapi"]
 TOOL_CONFIRMATION_PENDING = "__tool_confirmation_pending__"
+MAX_TELEGRAM_DOWNLOAD_BYTES = 20 * 1024 * 1024
+MAX_TELEGRAM_SEND_BYTES = 50 * 1024 * 1024
+TELEGRAM_SYSTEM_PROMPT_EXTENSION = """
+
+## Telegram-specific attachments and file delivery
+- User attachments arrive in the Telegram message with their local file path stated at the top of the message. Read attached non-image files with `read_file` (or a suitable tool for the format) before answering. Images are also passed as multimodal data URLs when supported: inspect them visually and never dump/read their binary bytes.
+- When the user asks you to create a document or other file and receive it in this chat, create and verify it, then call `send_file_to_user` with its path (and an optional short caption). Do not merely mention a path; the file must be sent through the Telegram chat. Never claim delivery unless the tool confirms success.
+"""
 
 # Etats de conversation
 AWAITING_PROVIDER_CONFIG = 1
@@ -227,9 +238,56 @@ class NemesisTelegramBot:
         ensure_config_dir()
 
     def _init_nemesis(self):
-        """Initialise les composants NEMESIS."""
+        """Initialise NEMESIS et ajoute l'outil exclusif de livraison Telegram."""
         self.registry = self.executor.registry
+        if "send_file_to_user" not in self.registry._tools:
+            from src.core.tool_kind import ToolKind
+
+            self.registry.register(
+                name="send_file_to_user",
+                kind=ToolKind.OTHER,
+                handler=self._prepare_telegram_file,
+                description=(
+                    "Send a verified local file to the user in this Telegram chat. "
+                    "Use after creating or locating an artifact that the user asked to receive. "
+                    "This tool exists only in Telegram; it uploads the file as a Telegram document."
+                ),
+                params_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Path to the file to deliver."},
+                        "caption": {"type": "string", "description": "Optional short message shown with the file."},
+                    },
+                    "required": ["path"],
+                },
+                risk="high",
+            )
         logger.info("NEMESIS agent initialized with %d tools", len(self.registry._tools))
+
+    def _prepare_telegram_file(self, path: str, caption: str = "") -> Dict[str, Any]:
+        """Validate a local artifact before the Telegram API uploads it."""
+        if not isinstance(path, str) or not path.strip():
+            return {"success": False, "error": "Un chemin de fichier est requis."}
+        try:
+            file_path = Path(path).expanduser().resolve(strict=True)
+            if not file_path.is_file():
+                return {"success": False, "error": "Le chemin indiqué n'est pas un fichier."}
+            size = file_path.stat().st_size
+            if size > MAX_TELEGRAM_SEND_BYTES:
+                return {
+                    "success": False,
+                    "error": f"Le fichier dépasse la limite Telegram de {MAX_TELEGRAM_SEND_BYTES // (1024 * 1024)} Mio.",
+                }
+            return {
+                "success": True,
+                "stdout": f"Fichier prêt à être envoyé : {file_path.name} ({size} octets).",
+                "telegram_file_path": str(file_path),
+                "telegram_file_name": file_path.name[:255],
+                "telegram_caption": str(caption or "")[:1024],
+                "size": size,
+            }
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {"success": False, "error": f"Fichier inaccessible : {exc}"}
 
     def _get_chat_config(self, chat_id: int) -> Dict[str, Any]:
         """Charge la configuration pour un chat."""
@@ -911,16 +969,15 @@ class NemesisTelegramBot:
         chat_id = update.effective_chat.id
         incoming = update.message
         message_text = incoming.text or incoming.caption or ""
-        document = getattr(incoming, "document", None)
-        has_image = bool(getattr(incoming, "photo", None)) or bool(
-            document and str(getattr(document, "mime_type", "") or "").startswith("image/")
-        )
+        attachment_candidates = self._telegram_attachment_candidates(incoming)
+        has_attachments = bool(attachment_candidates)
+        has_user_text = bool(message_text.strip())
 
-        if not message_text and not has_image:
+        if not has_user_text and not has_attachments:
             return
         self._chat_message_counts[chat_id] = self._chat_message_counts.get(chat_id, 0) + 1
         if not message_text:
-            message_text = "Décris et analyse cette image."
+            message_text = "Lis le ou les fichiers joints et réponds en fonction de leur contenu."
         
         config = self._get_chat_config(chat_id)
         
@@ -995,6 +1052,23 @@ class NemesisTelegramBot:
                 )
                 self.chat_states.pop(chat_id, None)
                 return
+
+        attached_files, attached_images, attachment_errors = await self._collect_telegram_attachments(
+            update, context, chat_id, config
+        )
+        if attachment_errors:
+            await self._send_long_message(
+                context,
+                chat_id,
+                "Certains fichiers joints n'ont pas pu être téléchargés :\n- "
+                + "\n- ".join(attachment_errors),
+            )
+            if not attached_files and not has_user_text:
+                return
+        if attached_files:
+            message_text = self._prepend_attachment_instruction(
+                message_text, attached_files, attachment_errors
+            )
         
         # Verifier si c'est une commande directe
         if message_text.startswith('/'):
@@ -1035,10 +1109,8 @@ class NemesisTelegramBot:
                 await context.bot.send_message(chat_id=chat_id, text=tool_result)
             return
         
-        # Traiter comme une requete pour l'IA (photos → pièces jointes multimodales)
-        attached_images = await self._collect_telegram_images(update, context)
-        if attached_images and not message_text.strip():
-            message_text = "Décris et analyse cette image."
+        # L'instruction sur les fichiers est préfixée au message utilisateur; les
+        # images passent en parallèle par le canal multimodal data: base64.
         await self._process_ai_request(update, context, message_text, chat_id, images=attached_images)
 
 
@@ -1297,6 +1369,24 @@ class NemesisTelegramBot:
                 "success": False,
                 "error": "L'outil n'a retourné aucun résultat.",
             }
+            if tool_name == "send_file_to_user" and isinstance(result, dict) and result.get("success"):
+                file_path = result.get("telegram_file_path")
+                file_name = result.get("telegram_file_name") or Path(file_path).name
+                caption = result.get("telegram_caption") or None
+                with open(file_path, "rb") as file_handle:
+                    await context.bot.send_document(
+                        chat_id=chat_id,
+                        document=file_handle,
+                        filename=file_name,
+                        caption=caption,
+                    )
+                sent_message = f"Document envoyé dans ce chat : {file_name}."
+                return {
+                    "success": True,
+                    "content": sent_message,
+                    "output": sent_message,
+                    "error": None,
+                }
             
             # Formater le résultat
             formatted = self._format_tool_result(result)
@@ -1325,37 +1415,151 @@ class NemesisTelegramBot:
             logger.error(f"Erreur outil {tool_name}: {e}")
             return {"success": False, "error": str(e), "content": "", "output": ""}
 
-    async def _collect_telegram_images(self, update: Update, context) -> List[Dict[str, Any]]:
-        """Photos envoyées au bot → data: URL pour le canal multimodal NemApi."""
-        from src.core.image_attachments import MAX_IMAGE_BYTES, MAX_IMAGES
-        import base64
+    def _telegram_attachment_candidates(self, incoming) -> List[Tuple[Any, str, str]]:
+        """Collect all Telegram media types that can be downloaded as files."""
+        candidates: List[Tuple[Any, str, str]] = []
+        for attr, fallback_name, fallback_mime in (
+            ("document", "document", "application/octet-stream"),
+            ("video", "video.mp4", "video/mp4"),
+            ("audio", "audio", "audio/mpeg"),
+            ("voice", "voice.ogg", "audio/ogg"),
+            ("animation", "animation.mp4", "video/mp4"),
+            ("video_note", "video_note.mp4", "video/mp4"),
+        ):
+            item = getattr(incoming, attr, None)
+            if item:
+                name = getattr(item, "file_name", None) or fallback_name
+                mime = getattr(item, "mime_type", None) or fallback_mime
+                candidates.append((item, str(mime), str(name)))
+        photo_sizes = getattr(incoming, "photo", None)
+        if photo_sizes:
+            largest = max(
+                photo_sizes,
+                key=lambda item: (
+                    int(getattr(item, "file_size", 0) or 0),
+                    int(getattr(item, "width", 0) or 0) * int(getattr(item, "height", 0) or 0),
+                ),
+            )
+            candidates.append((largest, "image/jpeg", "photo.jpg"))
+        return candidates
+
+    def _telegram_upload_directory(self, chat_id: int, config: Dict[str, Any]) -> Path:
+        """Prefer the configured workspace, falling back to the system temp dir."""
+        raw_workspace = str(config.get("security", {}).get("workspace") or "").strip()
+        candidates = []
+        if raw_workspace:
+            workspace = Path(raw_workspace).expanduser()
+            if workspace.is_dir() and os.access(workspace, os.W_OK):
+                candidates.append(workspace / ".nemesis" / "telegram_uploads" / str(chat_id))
+        candidates.append(Path(tempfile.gettempdir()) / "nemesis-telegram-uploads" / str(chat_id))
+        last_error = None
+        for upload_dir in candidates:
+            try:
+                upload_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                try:
+                    upload_dir.chmod(0o700)
+                except OSError:
+                    pass
+                return upload_dir
+            except OSError as exc:
+                last_error = exc
+        raise OSError(f"Impossible de créer le dossier de réception : {last_error}")
+
+    def _prepend_attachment_instruction(
+        self, message: str, files: List[Dict[str, Any]], errors: Optional[List[str]] = None
+    ) -> str:
+        lines = [
+            "FICHIERS JOINTS REÇUS VIA TELEGRAM",
+            "L'utilisateur a envoyé les fichiers suivants. Lis les fichiers non-image avec read_file (ou un outil adapté au format) avant de répondre.",
+        ]
+        for item in files:
+            path_literal = json.dumps(item["path"], ensure_ascii=False)
+            lines.append(
+                f"- Nom : {item['name']} | Type : {item['mime']} | Taille : {item['size']} octets | Chemin local (JSON) : {path_literal}"
+            )
+        if any(item.get("is_image") for item in files):
+            lines.append(
+                "Les images reconnues sont aussi jointes à ce même tour en multimodal; examine-les visuellement, sans les ouvrir comme du texte ni afficher leur base64."
+            )
+        if errors:
+            lines.append("Fichiers non reçus : " + "; ".join(errors))
+        lines.extend(["", "MESSAGE DE L'UTILISATEUR", message])
+        return "\n".join(lines)
+
+    async def _collect_telegram_attachments(
+        self, update: Update, context, chat_id: int, config: Dict[str, Any]
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
+        """Download documents/media to workspace or tmp and make image data URLs on send."""
+        from src.core.image_attachments import detect_image_mime
 
         incoming = getattr(update, "message", None)
         if incoming is None:
-            return []
-        candidates = []
-        photo = getattr(incoming, "photo", None)
-        if photo:
-            candidates.append((photo[-1], "image/jpeg", "photo.jpg"))
-        document = getattr(incoming, "document", None)
-        if document and str(getattr(document, "mime_type", "") or "").startswith("image/"):
-            candidates.append((document, document.mime_type, document.file_name or "image"))
+            return [], [], []
+        candidates = self._telegram_attachment_candidates(incoming)
+        saved_files: List[Dict[str, Any]] = []
+        images: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        if not candidates:
+            return saved_files, images, errors
+        eligible = []
+        for file_obj, mime, original_name in candidates:
+            name = Path(str(original_name)).name
+            safe_name = re.sub(r"[^\w.-]+", "_", name, flags=re.UNICODE).strip("._")[:120]
+            safe_name = safe_name or "telegram_attachment"
+            announced_size = int(getattr(file_obj, "file_size", 0) or 0)
+            if announced_size > MAX_TELEGRAM_DOWNLOAD_BYTES:
+                errors.append(f"{safe_name} dépasse la limite de téléchargement Telegram (20 Mio).")
+                continue
+            eligible.append((file_obj, mime, safe_name, announced_size))
+        if not eligible:
+            return saved_files, images, errors
+        try:
+            upload_dir = self._telegram_upload_directory(chat_id, config)
+        except OSError as exc:
+            errors.append(f"Impossible de préparer le dossier de réception : {exc}")
+            return saved_files, images, errors
 
-        specs: List[Dict[str, Any]] = []
-        for file_obj, mime, name in candidates[:MAX_IMAGES]:
+        for file_obj, mime, safe_name, announced_size in eligible:
+            target = upload_dir / f"{uuid.uuid4().hex[:12]}_{safe_name}"
             try:
-                size = int(getattr(file_obj, "file_size", 0) or 0)
-                if size > MAX_IMAGE_BYTES:
+                telegram_file = await context.bot.get_file(file_obj.file_id)
+                remote_size = int(getattr(telegram_file, "file_size", 0) or announced_size)
+                if remote_size > MAX_TELEGRAM_DOWNLOAD_BYTES:
+                    errors.append(f"{safe_name} dépasse la limite de téléchargement Telegram (20 Mio).")
                     continue
-                payload = await context.bot.get_file(file_obj.file_id).download_as_bytearray()
-                raw = bytes(payload)
-                if len(raw) > MAX_IMAGE_BYTES:
+                await telegram_file.download_to_drive(custom_path=str(target))
+                actual_size = target.stat().st_size
+                if actual_size > MAX_TELEGRAM_DOWNLOAD_BYTES:
+                    try:
+                        target.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    errors.append(f"{safe_name} dépasse la limite de téléchargement Telegram (20 Mio).")
                     continue
-                url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
-                specs.append({"url": url, "name": name[:120]})
-            except Exception as exc:  # noqa: BLE001 - une photo illisible ne bloque pas le message
-                logger.warning(f"Image Telegram ignorée: {exc}")
-        return specs
+                try:
+                    target.chmod(0o600)
+                except OSError:
+                    pass
+                image_mime = detect_image_mime(str(target))
+                safe_mime = re.sub(r"[^A-Za-z0-9.+_/-]", "", mime)[:80] or "application/octet-stream"
+                record = {
+                    "name": safe_name,
+                    "mime": image_mime or safe_mime,
+                    "path": str(target.resolve()),
+                    "size": actual_size,
+                    "is_image": bool(image_mime),
+                }
+                saved_files.append(record)
+                if image_mime:
+                    images.append({"path": record["path"], "mime": image_mime, "name": safe_name})
+            except Exception as exc:  # noqa: BLE001 - continue with other attachments
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                logger.warning("Téléchargement Telegram de %s échoué: %s", safe_name, exc)
+                errors.append(f"{safe_name} : {str(exc)[:240]}")
+        return saved_files, images, errors
 
     def _run_scheduled_task(self, task: dict) -> dict:
         """Run a scheduled task for its originating Telegram chat and notify it."""
@@ -1577,10 +1781,10 @@ class NemesisTelegramBot:
             self._init_nemesis()
         try:
             from src.core.agent_tools import build_system_prompt
-            return build_system_prompt(self.registry) or ""
+            return (build_system_prompt(self.registry) or "") + TELEGRAM_SYSTEM_PROMPT_EXTENSION
         except Exception as e:
             logger.error(f"Erreur construction prompt système: {e}")
-            return "You are NEMESIS. Use only the tools provided by the runtime."
+            return "You are NEMESIS. Use only the tools provided by the runtime.\n" + TELEGRAM_SYSTEM_PROMPT_EXTENSION
 
     def _format_ai_response(self, outputs: List[str], provider_type: str, model: str) -> str:
         """Convertit uniquement le texte final Markdown en texte clair structuré."""
@@ -1974,10 +2178,18 @@ class NemesisTelegramBot:
         for command_name, _original, _description in self._telegram_command_specs():
             if command_name not in native_handlers:
                 self.app.add_handler(CommandHandler(command_name, self.cli_command))
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-        self.app.add_handler(MessageHandler(
-            (filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND, self.handle_message
-        ))
+        attachment_filter = (
+            filters.PHOTO
+            | filters.Document.ALL
+            | filters.VIDEO
+            | filters.AUDIO
+            | filters.VOICE
+            | filters.VIDEO_NOTE
+            | filters.ANIMATION
+        )
+        self.app.add_handler(
+            MessageHandler((filters.TEXT | attachment_filter) & ~filters.COMMAND, self.handle_message)
+        )
         self.app.add_handler(CallbackQueryHandler(self.button_handler))
 
         logger.info("Demarrage du bot Telegram NEMESIS-CLI...")
