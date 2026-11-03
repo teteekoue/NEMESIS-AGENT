@@ -155,6 +155,7 @@ class ChatUI:
             accent=self._accent(tool_name),
             width=content_width(self.console),
             status_detail=f"exit {exit_code}" if exit_code is not None else "",
+            framed=tool_name in ("bash", "shell", "terminal"),
         )
         for row in card:
             self.console.print(row)
@@ -232,7 +233,14 @@ class ChatUI:
 
         self.console.print()
         self.console.print(
-            banner(provider=provider, target=target, model=model, workspace=workspace, connected=connected)
+            banner(
+                provider=provider,
+                target=target,
+                model=model,
+                workspace=workspace,
+                connected=connected,
+                version=version,
+            )
         )
         self.console.print(Rule(style=Catppuccin.SURFACE0))
         self.console.print()
@@ -246,7 +254,7 @@ class LiveTerminal:
 
     def __init__(self, console: Console, title: str = "bash"):
         self.console = console
-        self.title = title
+        self.title = truncate_middle(title, max(20, content_width(console) - 2))
         self.lines: List[str] = []
         self._live = None
 
@@ -270,11 +278,23 @@ class LiveTerminal:
             self._live.update(self._render())
 
     def _render(self):
+        from rich import box
         from rich.console import Group
+        from rich.panel import Panel
+        from rich.spinner import Spinner
 
-        body = "\n".join(self.lines) if self.lines else " …"
-        rows = [
-            Text(self.title, style="bold " + Catppuccin.PEACH),
-            guttered(Text(body, style=Catppuccin.TEXT), Catppuccin.SURFACE1, content_width(self.console)),
-        ]
-        return Group(*rows)
+        body = "\n".join(self.lines) if self.lines else "En attente de la sortie…"
+        command = Text(self.title, style="bold " + Catppuccin.PEACH)
+        return Panel(
+            Group(
+                command,
+                Spinner("dots", text="En cours", style=Catppuccin.BLUE),
+                Text(body, style=Catppuccin.TEXT if self.lines else Catppuccin.OVERLAY0),
+            ),
+            title=Text(" BASH ", style="bold " + Catppuccin.LAVENDER),
+            title_align="left",
+            border_style=Catppuccin.SURFACE1,
+            box=box.ROUNDED,
+            padding=(0, 1),
+            width=content_width(self.console),
+        )

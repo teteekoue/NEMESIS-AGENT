@@ -32,6 +32,22 @@ def test_normal_command_streams_output(tmp_path):
     assert final["exit_code"] == 0
 
 
+def test_streamed_bash_yields_output_before_command_finishes(tmp_path):
+    done_file = tmp_path / "done"
+    updates = run_bash_streamed(
+        f"printf 'started\\n'; sleep 1; touch '{done_file}'",
+        str(tmp_path),
+        timeout_ms=5000,
+    )
+
+    assert next(updates) == {"partial": "started"}
+    assert not done_file.exists()
+
+    final = list(updates)[-1]
+    assert final["success"] is True
+    assert done_file.exists()
+
+
 def test_silent_stdin_command_does_not_hang(tmp_path):
     start = time.time()
     _, final = _collect(

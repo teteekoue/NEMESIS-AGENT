@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rich import box
 from rich.console import Group
+from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
+from .render import truncate_middle
 from .theme import Catppuccin
 
 
-# ASCII compact : lisible a 60 colonnes, discret a l'ecran.
 BANNER = r"""
  _  _ ___ __  __ ___ ___ ___ ___
 | \| | __|  \/  | __/ __|_ _/ __|
@@ -21,17 +24,17 @@ BANNER = r"""
 def _shorten_path(path: str, limit: int = 44) -> str:
     if not path:
         return ""
-    p = str(path)
-    if len(p) <= limit:
-        return p
-    parts = Path(p).parts
-    tail = parts[-1] if parts else p
+    value = str(path)
+    if len(value) <= limit:
+        return value
+    parts = Path(value).parts
+    tail = parts[-1] if parts else value
     return ".../" + tail
 
 
-def _kv(label: str, value: str, width: int = 12) -> Text:
+def _kv(label: str, value: str, width: int = 10) -> Text:
     row = Text()
-    row.append(label.ljust(width), style=Catppuccin.OVERLAY0)
+    row.append(label.upper().ljust(width), style=Catppuccin.OVERLAY0)
     row.append(value, style=Catppuccin.SUBTEXT1)
     return row
 
@@ -42,52 +45,68 @@ def banner(
     model: str = "",
     workspace: str = "",
     connected: bool | None = None,
+    version: str | None = None,
 ):
-    """Bloc de demarrage : logo, identite, cible et etat."""
-    rows = []
-
-    rows.append(Text(BANNER, style="bold " + Catppuccin.MAUVE))
+    """Banniere de demarrage avec identite, configuration et raccourcis."""
+    content = []
+    content.append(Text(BANNER, style="bold " + Catppuccin.MAUVE))
 
     tagline = Text()
-    tagline.append("agent ia autonome", style=Catppuccin.OVERLAY0)
-    tagline.append("   \u00b7   ", style=Catppuccin.SURFACE1)
-    tagline.append("cli \u00b7 web \u00b7 telegram", style=Catppuccin.OVERLAY0)
-    rows.append(tagline)
-    rows.append(Text(""))
+    tagline.append("AGENT IA AUTONOME", style="bold " + Catppuccin.TEXT)
+    tagline.append("   ·   ", style=Catppuccin.SURFACE1)
+    tagline.append("CLI  /  WEB  /  TELEGRAM", style=Catppuccin.OVERLAY0)
+    if version:
+        tagline.append("   ·   ", style=Catppuccin.SURFACE1)
+        tagline.append(f"v{version}", style=Catppuccin.BLUE)
+    content.extend((tagline, Text("")))
 
-    if model:
-        rows.append(_kv("modele", model))
-    if provider:
-        rows.append(_kv("provider", provider))
+    details = Table.grid(padding=(0, 3))
+    details.add_column(no_wrap=True)
+    details.add_column(no_wrap=True)
+
+    if model or provider:
+        details.add_row(
+            _kv("Modèle", truncate_middle(model, 28)) if model else Text(""),
+            _kv("Fournisseur", truncate_middle(provider, 20), 12) if provider else Text(""),
+        )
     if target:
-        rows.append(_kv("endpoint", target))
+        details.add_row(_kv("Endpoint", truncate_middle(target, 48)), Text(""))
     if workspace:
-        rows.append(_kv("espace", _shorten_path(workspace, 56)))
+        details.add_row(_kv("Espace", _shorten_path(workspace, 48)), Text(""))
 
-    if connected is True:
-        state = Text("connecte", style=Catppuccin.GREEN)
-    elif connected is False:
-        state = Text("hors ligne", style=Catppuccin.RED)
-    else:
-        state = Text("non teste", style=Catppuccin.YELLOW)
-    row = Text()
-    row.append("connexion".ljust(12), style=Catppuccin.OVERLAY0)
-    row.append_text(state)
-    rows.append(row)
+    status_label, status_style = {
+        True: ("connecté", Catppuccin.GREEN),
+        False: ("hors ligne", Catppuccin.RED),
+        None: ("non testé", Catppuccin.YELLOW),
+    }[connected]
+    status = Text()
+    status.append(" ● ", style=status_style)
+    status.append(status_label, style=status_style)
+    connection = _kv("Connexion", "")
+    connection.append_text(status)
+    details.add_row(connection, Text(""))
+    content.append(details)
 
-    rows.append(Text(""))
-    hints = Text()
-    hints.append("/help", style="bold " + Catppuccin.PEACH)
-    hints.append("  commandes", style=Catppuccin.OVERLAY0)
-    hints.append("   \u00b7   ", style=Catppuccin.SURFACE1)
-    hints.append("/status", style="bold " + Catppuccin.PEACH)
-    hints.append("  etat", style=Catppuccin.OVERLAY0)
-    hints.append("   \u00b7   ", style=Catppuccin.SURFACE1)
-    hints.append("Ctrl+C", style="bold " + Catppuccin.PEACH)
-    hints.append("  interrompre", style=Catppuccin.OVERLAY0)
-    rows.append(hints)
+    shortcuts = Text()
+    shortcuts.append("/help", style="bold " + Catppuccin.PEACH)
+    shortcuts.append("  aide", style=Catppuccin.OVERLAY0)
+    shortcuts.append("   ·   ", style=Catppuccin.SURFACE1)
+    shortcuts.append("/status", style="bold " + Catppuccin.PEACH)
+    shortcuts.append("  état", style=Catppuccin.OVERLAY0)
+    shortcuts.append("   ·   ", style=Catppuccin.SURFACE1)
+    shortcuts.append("Ctrl+C", style="bold " + Catppuccin.PEACH)
+    shortcuts.append("  interrompre", style=Catppuccin.OVERLAY0)
+    content.extend((Text(""), shortcuts))
 
-    return Group(*rows)
+    return Panel(
+        Group(*content),
+        title=Text(" NEMESIS · SESSION ", style="bold " + Catppuccin.LAVENDER),
+        title_align="left",
+        border_style=Catppuccin.SURFACE1,
+        box=box.ROUNDED,
+        padding=(1, 2),
+        expand=False,
+    )
 
 
 def get_header(
@@ -98,24 +117,26 @@ def get_header(
     workspace: str = "",
     connected: bool | None = None,
 ):
-    """Une seule ligne : marque, modele, dossier. Pas de cadre."""
+    """Une seule ligne de session, sans cadre."""
     line = Text()
-    line.append("nemesis", style="bold " + Catppuccin.LAVENDER)
+    line.append("NEMESIS", style="bold " + Catppuccin.LAVENDER)
+    if version:
+        line.append(f" v{version}", style=Catppuccin.OVERLAY0)
 
     if model:
         line.append("  " + model, style=Catppuccin.SUBTEXT0)
     if provider:
-        line.append("  \u00b7  " + provider, style=Catppuccin.OVERLAY0)
+        line.append("  ·  " + provider, style=Catppuccin.OVERLAY0)
 
     if connected is True:
-        line.append("  \u00b7  ", style=Catppuccin.SURFACE1)
-        line.append("connecte", style=Catppuccin.GREEN)
+        line.append("  ·  ", style=Catppuccin.SURFACE1)
+        line.append("connecté", style=Catppuccin.GREEN)
     elif connected is False:
-        line.append("  \u00b7  ", style=Catppuccin.SURFACE1)
+        line.append("  ·  ", style=Catppuccin.SURFACE1)
         line.append("hors ligne", style=Catppuccin.RED)
 
     if workspace:
-        line.append("  \u00b7  ", style=Catppuccin.SURFACE1)
+        line.append("  ·  ", style=Catppuccin.SURFACE1)
         line.append(_shorten_path(workspace), style=Catppuccin.OVERLAY0)
 
     return line

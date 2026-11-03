@@ -7,7 +7,7 @@ Documentation de la couche `src/ui/`. Dernière refonte : octobre 2026 (branche 
 L'interface suit le langage visuel des agents CLI modernes (Claude Code, Codex, Gemini CLI) :
 
 - **Pas de cadre autour des messages.** Le contenu domine, une gouttière verticale `│` marque le bloc.
-- **Cartes d'outils sans bordure.** En-tête sobre (nom, paramètre, statut, durée), corps derrière la gouttière.
+- **Cartes d'outils sans bordure.** En-tête sobre (nom, paramètre, statut, durée), corps derrière la gouttière. Exception : Bash est encadré pour isoler clairement sa sortie.
 - **Largeur capée à 110 colonnes** (`MAX_CONTENT_WIDTH` dans `theme.py`) pour rester lisible sur grand écran.
 - **Palette restreinte.** Catppuccin Mocha, mais la couleur signale (rôle, statut) au lieu de décorer.
 - **Troncature systématique.** Toute sortie d'outil est coupée à 8 lignes (`TOOL_OUTPUT_PREVIEW_LINES`) avant affichage. Un conteneur ne doit jamais déborder.
@@ -46,7 +46,7 @@ clear()
 
 `tool_result()` applique trois règles :
 
-1. **Corps affiché uniquement pour les outils terminal** (`bash`, `shell`, `terminal`). Une lecture de fichier ne déverse pas son contenu dans le fil.
+1. **Corps affiché uniquement pour les outils terminal** (`bash`, `shell`, `terminal`). Une lecture de fichier ne déverse pas son contenu dans le fil. Les résultats Bash utilisent un panneau arrondi, également pendant le streaming.
 2. **Erreurs toujours visibles**, même pour les outils non-terminal.
 3. **Diffs** : pour `edit`, `write_file`, `apply_patch`, `search_replace`, si le corps contient des lignes `+`/`-`, il est rendu par `diff_body()` en rouge/vert.
 

@@ -186,12 +186,11 @@ class ToolBridge:
                 workdir = bash_input.workdir
 
                 final: Dict[str, Any] | None = None
-                accumulated: list[str] = []
                 for update in run_bash_streamed(
                     cmd, workdir, bash_input.timeout_ms, cancel_event=self.cancel_event
                 ):
                     if "partial" in update:
-                        accumulated.append(update["partial"])
+                        yield update
                     else:
                         final = update
                 if final is None:

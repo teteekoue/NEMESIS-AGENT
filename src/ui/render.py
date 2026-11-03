@@ -7,8 +7,10 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
-from rich.console import Console
+from rich import box
+from rich.console import Console, Group
 from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
@@ -65,8 +67,9 @@ def tool_card(
     width: int = 100,
     truncate: bool = True,
     status_detail: str = "",
+    framed: bool = False,
 ) -> list:
-    """Carte d'outil sans cadre : en-tete + corps derriere la gouttiere."""
+    """Carte d'outil; Bash peut encadrer sa sortie pour la distinguer du fil."""
     icon = "\u2713" if success else "\u2717"
     status_style = "tool.ok" if success else "tool.fail"
 
@@ -83,10 +86,20 @@ def tool_card(
     shown, hidden = preview_lines(body, TOOL_OUTPUT_PREVIEW_LINES) if truncate else (body, 0)
     rows: list = [head]
     if shown.strip():
-        # Sortie encadree : bordure marquee + fond, pour la distinguer du texte.
-        rows.append(guttered(Text(shown, style="tool.body"), "tool.gutter", width))
-        if hidden == 0:
-            rows.append(Text("\u2570" + "\u2500" * min(width - 2, 60), style="tool.gutter"))
+        if framed:
+            rows = [
+                Panel(
+                    Group(head, Text(shown, style="tool.body")),
+                    border_style=accent,
+                    box=box.ROUNDED,
+                    padding=(0, 1),
+                    width=width,
+                )
+            ]
+        else:
+            rows.append(guttered(Text(shown, style="tool.body"), "tool.gutter", width))
+            if hidden == 0:
+                rows.append(Text("\u2570" + "\u2500" * min(width - 2, 60), style="tool.gutter"))
     if hidden:
         more = Text()
         more.append(f"   \u2026 {hidden} ligne(s) masquee(s) \u00b7 /show last", style="tool.dim")

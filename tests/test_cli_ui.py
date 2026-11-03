@@ -4,7 +4,7 @@ from rich.console import Console
 
 import cli
 from agent import NemesisApp
-from src.ui.chat_ui import ChatUI
+from src.ui.chat_ui import ChatUI, LiveTerminal
 
 
 class _FakeClient:
@@ -104,7 +104,49 @@ def test_tool_cards_render_parameters_and_output():
     assert "echo nemesis" in rendered
     assert "\u2713 0.2s" in rendered
     assert "Action terminée." not in rendered
-    assert "╭" not in rendered
+    assert "╭" in rendered
+    assert "╰" in rendered
+
+
+def test_welcome_banner_highlights_nemesis_and_session_details():
+    output = StringIO()
+    chat = ChatUI(Console(file=output, color_system=None, width=100))
+
+    chat.welcome(
+        version="2.2.2",
+        provider="NEMAPI",
+        target="127.0.0.1:8090",
+        model="qwen-chat",
+        workspace="/home/user/project",
+        connected=True,
+    )
+
+    rendered = output.getvalue()
+    assert "_  _ ___ __  __ ___ ___ ___ ___" in rendered
+    assert "NEMESIS" in rendered
+    assert "AGENT IA AUTONOME" in rendered
+    assert "#   # #####" not in rendered
+    assert "qwen-chat" in rendered
+    assert "NEMAPI" in rendered
+    assert "127.0.0.1:8090" in rendered
+    assert "/home/user/project" in rendered
+    assert "connecté" in rendered
+    assert "v2.2.2" in rendered
+    assert "/help" in rendered
+
+
+def test_live_terminal_shows_command_and_running_status():
+    output = StringIO()
+    console = Console(file=output, color_system=None, width=90)
+    terminal = LiveTerminal(console, "python build.py")
+
+    console.print(terminal._render())
+
+    rendered = output.getvalue()
+    assert "BASH" in rendered
+    assert "python build.py" in rendered
+    assert "En cours" in rendered
+    assert "En attente de la sortie" in rendered
 
 
 def test_non_bash_tool_failure_is_brief_and_hides_output():

@@ -625,7 +625,13 @@ class NemesisApp:
                 live = None
                 if act_type == "bash":
                     try:
-                        live = self.composer.live_terminal("bash")
+                        bash_params = act_content if isinstance(act_content, dict) else {}
+                        live_title = (
+                            bash_params.get("description")
+                            or bash_params.get("command")
+                            or "bash"
+                        )
+                        live = self.composer.live_terminal(str(live_title))
                         live.__enter__()
                     except Exception:
                         live = None

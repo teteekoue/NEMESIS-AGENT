@@ -91,6 +91,24 @@ class TestToolBridge:
             # Skip this test if stdin redirection causes issues
             pytest.skip("stdin redirection issue in pytest")
 
+    def test_execute_bash_streams_output_before_command_finishes(self, tmp_path):
+        tb = ToolBridge(workspace=str(tmp_path), enable_subagents=False)
+        done_file = tmp_path / "done"
+        results = tb.execute_tool(
+            "bash",
+            {
+                "command": "printf 'started\\n'; sleep 1; touch done",
+                "workdir": str(tmp_path),
+            },
+        )
+
+        assert next(results) == {"partial": "started"}
+        assert not done_file.exists()
+
+        final = list(results)[-1]
+        assert final["success"] is True
+        assert done_file.exists()
+
     def test_execute_unknown_tool(self, tmp_path):
         tb = ToolBridge(workspace=str(tmp_path))
         results = list(tb.execute_tool("nonexistent_tool", {}))

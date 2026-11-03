@@ -157,7 +157,11 @@ class ActionExecutor:
             return
         try:
             from src.core.agent_tools import _make_bash_input
-            from src.core.tools.bash import run_bash
+            from src.core.tools.bash import (
+                _detect_self_matching_pkill,
+                run_bash,
+                run_bash_streamed,
+            )
 
             seconds = timeout
             milliseconds = timeout_ms
@@ -169,7 +173,53 @@ class ActionExecutor:
                 workdir or cwd,
                 timeout_is_ms=seconds is None and milliseconds is not None,
             )
-            result = run_bash(bash_input)
+            if async_mode:
+                result = run_bash(bash_input)
+            else:
+                self_kill = _detect_self_matching_pkill(bash_input.command)
+                if self_kill:
+                    yield {
+                        "success": False,
+                        "stdout": self_kill,
+                        "output": self_kill,
+                        "exit_code": None,
+                        "returncode": None,
+                        "error": self_kill,
+                        "signal": None,
+                    }
+                    return
+
+                final = None
+                for update in run_bash_streamed(
+                    bash_input.command,
+                    bash_input.workdir,
+                    bash_input.timeout_ms,
+                ):
+                    if "partial" in update:
+                        yield update
+                    else:
+                        final = update
+                if final is None:
+                    final = {
+                        "success": False,
+                        "output": "",
+                        "error": "La commande n'a produit aucun resultat exploitable.",
+                        "exit_code": -1,
+                    }
+                output = final.get("output") or final.get("error") or ""
+                if not output.strip():
+                    output = f"[no output captured — exit code: {final.get('exit_code')}]"
+                yield {
+                    "success": bool(final.get("success", False)),
+                    "stdout": output,
+                    "output": output,
+                    "exit_code": final.get("exit_code"),
+                    "returncode": final.get("exit_code"),
+                    "error": final.get("error"),
+                    "signal": final.get("signal"),
+                }
+                return
+
             output = result.output or result.error or ""
             if not output.strip():
                 output = f"[no output captured — exit code: {result.exit_code}]"
